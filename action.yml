@@ -1,0 +1,48 @@
+name: Setup Socket Firewall
+description: >-
+  Route npm installs through the WorkOS Socket Firewall registry and
+  null-route registry.npmjs.org so installs cannot silently fall back to
+  the public registry.
+inputs:
+  token:
+    description: >-
+      Socket Firewall auth token. Pass secrets.SOCKET_FIREWALL_TOKEN.
+      When empty (e.g. fork PRs on public repos, where secrets are
+      unavailable), the action emits a warning and leaves the public
+      registry reachable.
+    required: false
+    default: ""
+  registry-url:
+    description: Socket Firewall registry URL.
+    required: false
+    default: "https://socket-firewall.workos.dev/"
+runs:
+  using: composite
+  steps:
+    - name: Configure npm registry and null-route public registry
+      shell: bash
+      env:
+        SFW_TOKEN: ${{ inputs.token }}
+        SFW_REGISTRY: ${{ inputs.registry-url }}
+      run: |
+        if [ -z "$SFW_TOKEN" ]; then
+          echo "::warning title=Socket Firewall not active::SOCKET_FIREWALL_TOKEN not provided — npm installs will use the public registry. See workos/setup-socket-firewall README."
+          exit 0
+        fi
+
+        # Registry + per-host auth. The auth line must key off the host
+        # (npm requires _authToken to be host-scoped), so derive it from
+        # the registry URL rather than hardcoding.
+        SFW_HOST_PATH="${SFW_REGISTRY#https://}"
+        {
+          echo "registry=${SFW_REGISTRY}"
+          echo "//${SFW_HOST_PATH}:_authToken=${SFW_TOKEN}"
+        } >> ~/.npmrc
+
+        # Null-route the public registry (IPv4 + IPv6) so any install that
+        # bypasses the npmrc fails loudly instead of silently reaching
+        # registry.npmjs.org. Same pattern as the workos/workos init action
+        # (INFRA-5509).
+        printf '127.0.0.1 registry.npmjs.org\n::1 registry.npmjs.org\n' | sudo tee -a /etc/hosts >/dev/null
+
+        echo "Socket Firewall active: npm registry -> ${SFW_REGISTRY}; registry.npmjs.org null-routed."

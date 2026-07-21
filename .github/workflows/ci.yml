@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    name: Smoke test (${{ matrix.mode }})
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        mode: [with-token, without-token]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run action (real token)
+        if: matrix.mode == 'with-token'
+        uses: ./
+        with:
+          token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+
+      - name: Run action (no token)
+        if: matrix.mode == 'without-token'
+        uses: ./
+        with:
+          token: ""
+
+      - name: Assert null-route and npmrc (with-token)
+        if: matrix.mode == 'with-token'
+        run: |
+          set -euo pipefail
+          grep -q "registry=https://socket-firewall.workos.dev/" ~/.npmrc
+          grep -q "127.0.0.1 registry.npmjs.org" /etc/hosts
+          grep -q "::1 registry.npmjs.org" /etc/hosts
+          # Public registry must be unreachable
+          if curl -sS --max-time 5 https://registry.npmjs.org/ -o /dev/null; then
+            echo "::error::registry.npmjs.org is still reachable"; exit 1
+          fi
+          echo "null-route verified"
+
+      - name: Install through the firewall (with-token)
+        if: matrix.mode == 'with-token'
+        run: |
+          set -euo pipefail
+          mkdir /tmp/smoke && cd /tmp/smoke
+          npm init -y >/dev/null
+          npm install left-pad --no-audit --no-fund
+          node -e "require('left-pad'); console.log('install through SFW OK')"
+
+      - name: Assert untouched (without-token)
+        if: matrix.mode == 'without-token'
+        run: |
+          set -euo pipefail
+          if grep -q "socket-firewall" ~/.npmrc 2>/dev/null; then
+            echo "::error::npmrc modified despite empty token"; exit 1
+          fi
+          if grep -q "registry.npmjs.org" /etc/hosts; then
+            echo "::error::/etc/hosts modified despite empty token"; exit 1
+          fi
+          curl -sS --max-time 10 https://registry.npmjs.org/ -o /dev/null
+          echo "fallback path verified (public registry reachable, warning emitted)"
