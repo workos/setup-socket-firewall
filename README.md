@@ -38,3 +38,8 @@ access to it, ask in #ask-foundation.
   Regenerate the lockfile with the firewall registry configured.
 - Yarn Classic users: `registry.yarnpkg.com` is not null-routed; open an
   issue if you need it.
+- **Persistent runners:** the `/etc/hosts` null-route is machine-wide and
+  outlives the job. On persistent self-hosted runners this means
+  `registry.npmjs.org` stays unreachable for subsequent jobs on that
+  machine. Use ephemeral runners (GitHub-hosted and Depot runners are
+  ephemeral) or accept machine-wide enforcement.
