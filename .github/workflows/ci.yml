@@ -52,6 +52,39 @@ jobs:
           npm install left-pad --no-audit --no-fund
           node -e "require('left-pad'); console.log('install through SFW OK')"
 
+      - name: Assert lockfile resolved-host is redirected through the firewall
+        run: |
+          set -euo pipefail
+          # Regression guard for the bypass this action closes: a lockfile whose
+          # `resolved` host is a public mirror (registry.yarnpkg.com) must NOT be
+          # fetched verbatim. registry.yarnpkg.com is null-routed, so a successful
+          # `npm ci` proves replace-registry-host=always redirected the tarball
+          # fetch to socket-firewall.workos.dev. The tarball content (and thus the
+          # integrity hash) is identical to registry.npmjs.org, which the firewall
+          # proxies.
+          mkdir /tmp/redirect && cd /tmp/redirect
+          cat > package.json <<'JSON'
+          { "name": "sfw-redirect-smoke", "version": "1.0.0", "dependencies": { "left-pad": "1.3.0" } }
+          JSON
+          cat > package-lock.json <<'JSON'
+          {
+            "name": "sfw-redirect-smoke",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+              "": { "name": "sfw-redirect-smoke", "version": "1.0.0", "dependencies": { "left-pad": "1.3.0" } },
+              "node_modules/left-pad": {
+                "version": "1.3.0",
+                "resolved": "https://registry.yarnpkg.com/left-pad/-/left-pad-1.3.0.tgz",
+                "integrity": "sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQGinBN9yTQT3bFlCBy/aVx2HrNcqQGsdot8ghrjyrvMCoEA=="
+              }
+            }
+          }
+          JSON
+          npm ci --no-audit --no-fund
+          node -e "require('left-pad'); console.log('yarnpkg-resolved lockfile redirected through SFW OK')"
+
   smoke-without-token:
     name: Smoke test (without-token)
     runs-on: ubuntu-22.04

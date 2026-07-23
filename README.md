@@ -41,6 +41,13 @@ access to it, ask in #ask-foundation.
   are not rewritten; if they point at a null-routed host they surface as
   install failures. Regenerate the lockfile with the firewall registry
   configured.
+- `replace-registry-host=always` also rewrites `resolved` URLs that point at
+  a private or third-party registry (e.g. `@your-scope/pkg` resolved from an
+  internal Nexus/Artifactory host) to `socket-firewall.workos.dev`. This is
+  intentional — the firewall is meant to be the single egress for package
+  fetches — but if it does not proxy that upstream, those installs will fail
+  (typically a 404). Configure the firewall to proxy the upstream, or fetch
+  such packages in a separate job that does not run this action.
 - **Known limitations (not fully closed by this action):** a project-level
   `.npmrc` committed to the repo, or an `npm_config_registry` environment
   variable, overrides the user-level `~/.npmrc` written here and can redirect
