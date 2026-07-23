@@ -33,12 +33,15 @@ jobs:
         run: |
           set -euo pipefail
           grep -q "registry=https://socket-firewall.workos.dev/" ~/.npmrc
-          grep -q "127.0.0.1 registry.npmjs.org" /etc/hosts
-          grep -q "::1 registry.npmjs.org" /etc/hosts
-          # Public registry must be unreachable
-          if curl -sS --max-time 5 https://registry.npmjs.org/ -o /dev/null; then
-            echo "::error::registry.npmjs.org is still reachable"; exit 1
-          fi
+          grep -q "replace-registry-host=always" ~/.npmrc
+          for host in registry.npmjs.org registry.yarnpkg.com; do
+            grep -q "127.0.0.1 $host" /etc/hosts
+            grep -q "::1 $host" /etc/hosts
+            # Public registry/mirror must be unreachable
+            if curl -sS --max-time 5 "https://$host/" -o /dev/null; then
+              echo "::error::$host is still reachable"; exit 1
+            fi
+          done
           echo "null-route verified"
 
       - name: Install through the firewall

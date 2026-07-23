@@ -31,13 +31,20 @@ runs:
         {
           echo "registry=https://socket-firewall.workos.dev/"
           echo "//socket-firewall.workos.dev/:_authToken=${SFW_TOKEN}"
+          # Rewrite ALL lockfile `resolved` hosts to the firewall registry,
+          # not just registry.npmjs.org (npm's default `replace-registry-host`
+          # is `npmjs`, which leaves resolved URLs on other hosts — e.g.
+          # registry.yarnpkg.com — fetched verbatim, bypassing scanning).
+          echo "replace-registry-host=always"
         } >> ~/.npmrc
         chmod 600 ~/.npmrc
 
-        # Null-route the public registry (IPv4 + IPv6) so any install that
-        # bypasses the npmrc fails loudly instead of silently reaching
-        # registry.npmjs.org. Same pattern as the workos/workos init action
-        # (INFRA-5509).
-        printf '127.0.0.1 registry.npmjs.org\n::1 registry.npmjs.org\n' | sudo tee -a /etc/hosts >/dev/null
+        # Null-route the public registry and known public mirrors (IPv4 + IPv6)
+        # so any install that bypasses the npmrc fails loudly instead of
+        # silently reaching a public registry. Same pattern as the
+        # workos/workos init action (INFRA-5509).
+        for host in registry.npmjs.org registry.yarnpkg.com; do
+          printf '127.0.0.1 %s\n::1 %s\n' "$host" "$host" | sudo tee -a /etc/hosts >/dev/null
+        done
 
-        echo "Socket Firewall active: npm registry -> https://socket-firewall.workos.dev/; registry.npmjs.org null-routed."
+        echo "Socket Firewall active: npm registry -> https://socket-firewall.workos.dev/ (replace-registry-host=always); registry.npmjs.org and registry.yarnpkg.com null-routed."
