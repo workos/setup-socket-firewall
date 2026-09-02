@@ -21,8 +21,14 @@ warn() {
 }
 
 require_environment() {
-  [[ -n "${GITHUB_ENV:-}" ]] || { printf 'GITHUB_ENV is required\n' >&2; exit 1; }
-  [[ -n "${GITHUB_OUTPUT:-}" ]] || { printf 'GITHUB_OUTPUT is required\n' >&2; exit 1; }
+  [[ -n "${GITHUB_ENV:-}" ]] || {
+    printf 'GITHUB_ENV is required\n' >&2
+    exit 1
+  }
+  [[ -n "${GITHUB_OUTPUT:-}" ]] || {
+    printf 'GITHUB_OUTPUT is required\n' >&2
+    exit 1
+  }
   [[ -n "${HOME:-}" ]] || fail 'HOME is required.'
   for command_name in sed chmod mktemp grep mkdir cat touch rm dirname pwd; do
     command -v "$command_name" >/dev/null 2>&1 || fail "Required command is unavailable: ${command_name}."
@@ -36,6 +42,17 @@ write_registry_environment() {
     printf 'PNPM_CONFIG_REGISTRY=%s\n' "$registry"
     printf 'BUN_CONFIG_REGISTRY=%s\n' "$registry"
   } >>"$GITHUB_ENV"
+}
+
+configure_setup_node_placeholder() {
+  local npmrc="${NPM_CONFIG_USERCONFIG:-${HOME}/.npmrc}"
+  if [[ -z "${NODE_AUTH_TOKEN:-}" && -f "$npmrc" ]] && grep -Fq '${NODE_AUTH_TOKEN}' "$npmrc"; then
+    export SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true
+    {
+      printf 'NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX\n'
+      printf 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true\n'
+    } >>"$GITHUB_ENV"
+  fi
 }
 
 strip_managed_npmrc_block() {
@@ -63,7 +80,7 @@ validate_config_path() {
   fi
 
   if [[ "$real_parent" != "$real_home" && "$real_parent" != "$real_home/"* &&
-        ( -z "$real_runner" || ( "$real_parent" != "$real_runner" && "$real_parent" != "$real_runner/"* ) ) ]]; then
+    (-z "$real_runner" || ("$real_parent" != "$real_runner" && "$real_parent" != "$real_runner/"*)) ]]; then
     fail "Managed config path must be inside HOME or RUNNER_TEMP: ${npmrc}."
   fi
 }
@@ -223,6 +240,7 @@ main() {
 
   if [[ -z "${SFW_TOKEN:-}" ]]; then
     if [[ "$SFW_ALLOW_EXTERNAL_FORK_FALLBACK" == 'true' ]] && is_public_external_fork; then
+      configure_setup_node_placeholder
       write_registry_environment "$PUBLIC_REGISTRY"
       printf 'active=false\n' >>"$GITHUB_OUTPUT"
       warn 'SOCKET_FIREWALL_TOKEN is unavailable in this explicitly permitted public external-fork pull request; public npm remains reachable.'
@@ -244,6 +262,7 @@ main() {
   if [[ "$SFW_CONFIGURE_BUN" == 'true' ]]; then
     configure_bunfig
   fi
+  configure_setup_node_placeholder
   write_registry_environment "$SFW_REGISTRY"
   printf 'active=true\n' >>"$GITHUB_OUTPUT"
   trap - EXIT

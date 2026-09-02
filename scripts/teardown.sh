@@ -14,8 +14,14 @@ fail() {
 }
 
 require_environment() {
-  [[ -n "${GITHUB_ENV:-}" ]] || { printf 'GITHUB_ENV is required\n' >&2; exit 1; }
-  [[ -n "${GITHUB_OUTPUT:-}" ]] || { printf 'GITHUB_OUTPUT is required\n' >&2; exit 1; }
+  [[ -n "${GITHUB_ENV:-}" ]] || {
+    printf 'GITHUB_ENV is required\n' >&2
+    exit 1
+  }
+  [[ -n "${GITHUB_OUTPUT:-}" ]] || {
+    printf 'GITHUB_OUTPUT is required\n' >&2
+    exit 1
+  }
   [[ -n "${HOME:-}" ]] || fail 'HOME is required.'
   for command_name in sed chmod mktemp grep cat rm dirname pwd; do
     command -v "$command_name" >/dev/null 2>&1 || fail "Required command is unavailable: ${command_name}."
@@ -28,6 +34,15 @@ write_public_registry_environment() {
     printf 'PNPM_CONFIG_REGISTRY=%s\n' "$PUBLIC_REGISTRY"
     printf 'BUN_CONFIG_REGISTRY=%s\n' "$PUBLIC_REGISTRY"
   } >>"$GITHUB_ENV"
+}
+
+clear_owned_node_auth_placeholder() {
+  if [[ "${SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER:-false}" == 'true' ]]; then
+    {
+      printf 'NODE_AUTH_TOKEN=\n'
+      printf 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=false\n'
+    } >>"$GITHUB_ENV"
+  fi
 }
 
 validate_config_path() {
@@ -45,7 +60,7 @@ validate_config_path() {
   fi
 
   if [[ "$real_parent" != "$real_home" && "$real_parent" != "$real_home/"* &&
-        ( -z "$real_runner" || ( "$real_parent" != "$real_runner" && "$real_parent" != "$real_runner/"* ) ) ]]; then
+    (-z "$real_runner" || ("$real_parent" != "$real_runner" && "$real_parent" != "$real_runner/"*)) ]]; then
     fail "Managed config path must be inside HOME or RUNNER_TEMP: ${npmrc}."
   fi
 }
@@ -190,6 +205,7 @@ main() {
   remove_managed_npmrc_blocks
   remove_managed_bunfig
   remove_dns_enforcement
+  clear_owned_node_auth_placeholder
   if [[ "${SFW_ROLLBACK_ONLY:-false}" == 'true' ]]; then
     return
   fi

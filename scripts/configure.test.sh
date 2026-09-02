@@ -43,6 +43,7 @@ new_case() {
   printf 'registry=https://registry.npmjs.org/' >"$NPM_CONFIG_USERCONFIG"
   unset SFW_TOKEN SFW_ALLOW_EXTERNAL_FORK_FALLBACK SFW_CONFIGURE_BUN SFW_BUN_CONFIG_PATH SFW_EVENT_NAME
   unset SFW_REPOSITORY_PRIVATE SFW_HEAD_REPOSITORY SFW_BASE_REPOSITORY XDG_CONFIG_HOME
+  unset NODE_AUTH_TOKEN SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER
 }
 
 cleanup_case() {
@@ -82,6 +83,36 @@ test_active_configuration() {
     assert_contains "$SFW_HOSTS_FILE" "::1 ${host} # workos-sfw"
   done
 
+  cleanup_case
+}
+
+test_setup_node_v7_placeholder_is_satisfied_without_exposing_sfw_token() {
+  new_case
+  printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' >>"$NPM_CONFIG_USERCONFIG"
+
+  SFW_TOKEN=test-token \
+    SFW_ALLOW_EXTERNAL_FORK_FALLBACK=false \
+    SFW_EVENT_NAME=push \
+    bash "$SCRIPT" >/dev/null
+
+  assert_contains "$GITHUB_ENV" 'NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX'
+  assert_contains "$GITHUB_ENV" 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true'
+  assert_not_contains "$GITHUB_ENV" 'NODE_AUTH_TOKEN=test-token'
+  cleanup_case
+}
+
+test_existing_node_auth_token_is_not_overwritten() {
+  new_case
+  printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' >>"$NPM_CONFIG_USERCONFIG"
+  export NODE_AUTH_TOKEN=caller-owned-token
+
+  SFW_TOKEN=test-token \
+    SFW_ALLOW_EXTERNAL_FORK_FALLBACK=false \
+    SFW_EVENT_NAME=push \
+    bash "$SCRIPT" >/dev/null
+
+  assert_not_contains "$GITHUB_ENV" 'NODE_AUTH_TOKEN='
+  assert_not_contains "$GITHUB_ENV" 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER='
   cleanup_case
 }
 
@@ -236,7 +267,8 @@ test_effective_npmrc_deduplicates_home_path() {
 
 test_effective_npmrc_outside_runner_roots_is_rejected() {
   new_case
-  export NPM_CONFIG_USERCONFIG="$(dirname "$CASE_DIR")/outside.npmrc"
+  NPM_CONFIG_USERCONFIG="$(dirname "$CASE_DIR")/outside.npmrc"
+  export NPM_CONFIG_USERCONFIG
   set +e
   SFW_TOKEN=test-token \
     SFW_ALLOW_EXTERNAL_FORK_FALLBACK=false \
@@ -306,6 +338,8 @@ test_existing_global_bun_config_fails_closed() {
 }
 
 test_active_configuration
+test_setup_node_v7_placeholder_is_satisfied_without_exposing_sfw_token
+test_existing_node_auth_token_is_not_overwritten
 test_active_configuration_is_idempotent
 test_strict_missing_token_fails_closed
 test_public_external_fork_fallback
