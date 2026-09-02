@@ -5,10 +5,27 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
+  unit:
+    name: Socket Firewall action tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Run shell tests
+        run: |
+          set -euo pipefail
+          bash -n scripts/*.sh
+          bash scripts/configure.test.sh
+          bash scripts/teardown.test.sh
+
   check-secret:
     name: Check secret availability
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     outputs:
       has-token: ${{ steps.probe.outputs.has-token }}
     steps:
@@ -17,57 +34,213 @@ jobs:
         run: echo "has-token=${{ secrets.SOCKET_FIREWALL_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
 
   smoke-with-token:
-    name: Smoke test (with-token)
+    name: Smoke test (${{ matrix.manager }}, with-token)
     needs: check-secret
     if: needs.check-secret.outputs.has-token == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        manager: [npm, pnpm, bun]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - name: Run action (real token)
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+
+      - name: Setup Bun
+        if: matrix.manager == 'bun'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Configure Socket Firewall
+        id: sfw
+        uses: ./
+        with:
+          token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+          configure-bun: ${{ matrix.manager == 'bun' }}
+
+      - name: Assert protected configuration
+        env:
+          ACTIVE: ${{ steps.sfw.outputs.active }}
+        run: |
+          set -euo pipefail
+          test "$ACTIVE" = true
+          test "$NPM_CONFIG_REGISTRY" = https://socket-firewall.workos.dev/
+          test "$PNPM_CONFIG_REGISTRY" = https://socket-firewall.workos.dev/
+          test "$BUN_CONFIG_REGISTRY" = https://socket-firewall.workos.dev/
+          grep -q '^registry=https://socket-firewall.workos.dev/$' "$NPM_CONFIG_USERCONFIG"
+          grep -q '^//socket-firewall.workos.dev/:_authToken=' "$NPM_CONFIG_USERCONFIG"
+          grep -q '^replace-registry-host=always$' "$NPM_CONFIG_USERCONFIG"
+          test "$(stat -c '%a' "$NPM_CONFIG_USERCONFIG")" = 600
+          if [[ "${{ matrix.manager }}" == bun ]]; then
+            test -n "$SFW_BUN_CONFIG_PATH"
+            grep -q 'registry = { url = "https://socket-firewall.workos.dev/", token = "' "$SFW_BUN_CONFIG_PATH"
+            test "$(stat -c '%a' "$SFW_BUN_CONFIG_PATH")" = 600
+          fi
+          for host in registry.npmjs.org registry.yarnpkg.com; do
+            grep -Fqx "127.0.0.1 $host # workos-sfw" /etc/hosts
+            grep -Fqx "::1 $host # workos-sfw" /etc/hosts
+            if curl -sS --max-time 5 "https://$host/" -o /dev/null; then
+              echo "::error::$host is reachable while Socket Firewall is active"
+              exit 1
+            fi
+          done
+
+      - name: Install through Socket Firewall
+        env:
+          MANAGER: ${{ matrix.manager }}
+        run: |
+          set -euo pipefail
+          work="/tmp/sfw-${MANAGER}"
+          rm -rf "$work"
+          mkdir -p "$work"
+          cp -R "$GITHUB_WORKSPACE/.github/fixtures/$MANAGER/." "$work/"
+          cd "$work"
+          case "$MANAGER" in
+            npm)
+              npm ci --ignore-scripts --no-audit --no-fund
+              ;;
+            pnpm)
+              npm install --global pnpm@10.18.3 --ignore-scripts --no-audit --no-fund
+              pnpm install --frozen-lockfile --ignore-scripts
+              ;;
+            bun)
+              bun install --frozen-lockfile --ignore-scripts
+              ;;
+          esac
+          node -e "require('left-pad'); console.log('${MANAGER} install through SFW OK')"
+
+      - name: Assert non-npmjs lockfile host is rewritten
+        if: matrix.manager == 'npm'
+        run: |
+          set -euo pipefail
+          work=/tmp/sfw-redirect
+          rm -rf "$work"
+          mkdir -p "$work"
+          cd "$work"
+          cat > package.json <<'JSON'
+          { "name": "sfw-redirect-smoke", "version": "1.0.0", "dependencies": { "left-pad": "1.3.0" } }
+          JSON
+          cat > package-lock.json <<'JSON'
+          {
+            "name": "sfw-redirect-smoke",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+              "": { "name": "sfw-redirect-smoke", "version": "1.0.0", "dependencies": { "left-pad": "1.3.0" } },
+              "node_modules/left-pad": {
+                "version": "1.3.0",
+                "resolved": "https://registry.yarnpkg.com/left-pad/-/left-pad-1.3.0.tgz",
+                "integrity": "sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQGinBN9yTQT3bFlCBy/aVx2HrNcqQGsdot8ghrjyrvMCoEA=="
+              }
+            }
+          }
+          JSON
+          npm ci --ignore-scripts --no-audit --no-fund
+          node -e "require('left-pad'); console.log('non-npmjs lockfile host rewritten through SFW')"
+
+      - name: Restore public registry before publication
+        id: teardown
+        uses: ./teardown
+
+      - name: Assert publish path is restored
+        env:
+          ACTIVE: ${{ steps.teardown.outputs.active }}
+          NODE_AUTH_TOKEN: dry-run-placeholder
+        run: |
+          set -euo pipefail
+          test "$ACTIVE" = false
+          test "$NPM_CONFIG_REGISTRY" = https://registry.npmjs.org/
+          test "$PNPM_CONFIG_REGISTRY" = https://registry.npmjs.org/
+          test "$BUN_CONFIG_REGISTRY" = https://registry.npmjs.org/
+          ! grep -q '# workos-sfw' /etc/hosts
+          ! grep -q 'socket-firewall.workos.dev/:_authToken=' "$NPM_CONFIG_USERCONFIG"
+          if [[ -n "${SFW_BUN_CONFIG_PATH:-}" ]]; then
+            test ! -e "$SFW_BUN_CONFIG_PATH"
+          fi
+          echo 'Registry host state after teardown:'
+          grep -E 'registry\.(npmjs|yarnpkg)\.org' /etc/hosts || true
+          getent ahosts registry.npmjs.org || true
+          for host in registry.npmjs.org registry.yarnpkg.com; do
+            curl -sS --max-time 10 "https://$host/" -o /dev/null
+          done
+          work=/tmp/sfw-publish-dry-run
+          rm -rf "$work"
+          mkdir -p "$work"
+          cd "$work"
+          printf '{"name":"sfw-publish-dry-run","version":"1.0.0","files":["index.js"]}\n' > package.json
+          printf 'module.exports = true;\n' > index.js
+          npm publish --dry-run --registry=https://registry.npmjs.org/ >/dev/null
+          test "$(npm config get registry)" = https://registry.npmjs.org/
+
+  yarn-classic-compatibility:
+    name: Compatibility check (Yarn Classic lockfile blocks safely)
+    needs: check-secret
+    if: needs.check-secret.outputs.has-token == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+
+      - name: Configure Socket Firewall
         uses: ./
         with:
           token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
 
-      - name: Assert null-route and npmrc
+      - name: Prove public-resolved Yarn lockfile fails closed
         run: |
           set -euo pipefail
-          grep -q "registry=https://socket-firewall.workos.dev/" ~/.npmrc
-          grep -q "127.0.0.1 registry.npmjs.org" /etc/hosts
-          grep -q "::1 registry.npmjs.org" /etc/hosts
-          # Public registry must be unreachable
-          if curl -sS --max-time 5 https://registry.npmjs.org/ -o /dev/null; then
-            echo "::error::registry.npmjs.org is still reachable"; exit 1
-          fi
-          echo "null-route verified"
+          npm install --global yarn@1.22.22 --ignore-scripts --no-audit --no-fund
+          work=/tmp/sfw-yarn-compatibility
+          rm -rf "$work"
+          mkdir -p "$work"
+          cp -R "$GITHUB_WORKSPACE/.github/fixtures/yarn/." "$work/"
+          cd "$work"
+          set +e
+          output="$(yarn install --frozen-lockfile --ignore-scripts --no-progress 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -Eq 'ECONNREFUSED|connect.*refused' <<<"$output"
+          echo 'Yarn Classic remains a rollout blocker: its absolute public lockfile URL was DNS-blocked rather than fetched unscanned.'
 
-      - name: Install through the firewall
-        run: |
-          set -euo pipefail
-          mkdir /tmp/smoke && cd /tmp/smoke
-          npm init -y >/dev/null
-          npm install left-pad --no-audit --no-fund
-          node -e "require('left-pad'); console.log('install through SFW OK')"
+      - name: Restore runner configuration
+        uses: ./teardown
 
-  smoke-without-token:
-    name: Smoke test (without-token)
+  smoke-strict-without-token:
+    name: Smoke test (strict missing-token)
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
 
-      - name: Run action (no token)
+      - name: Run action without token
+        id: strict
+        continue-on-error: true
         uses: ./
         with:
           token: ""
 
-      - name: Assert untouched
+      - name: Assert fail-closed result
+        env:
+          OUTCOME: ${{ steps.strict.outcome }}
         run: |
           set -euo pipefail
-          if grep -q "socket-firewall" ~/.npmrc 2>/dev/null; then
-            echo "::error::npmrc modified despite empty token"; exit 1
-          fi
-          if grep -q "registry.npmjs.org" /etc/hosts; then
-            echo "::error::/etc/hosts modified despite empty token"; exit 1
-          fi
-          curl -sS --max-time 10 https://registry.npmjs.org/ -o /dev/null
-          echo "fallback path verified (public registry reachable, warning emitted)"
+          test "$OUTCOME" = failure
+          ! grep -q '# workos-sfw' /etc/hosts
+          ! grep -q 'socket-firewall.workos.dev/:_authToken=' ~/.npmrc 2>/dev/null

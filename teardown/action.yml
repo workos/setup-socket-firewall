@@ -1,0 +1,19 @@
+name: Teardown Socket Firewall
+description: >-
+  Remove only Socket Firewall-owned npm and DNS configuration, then restore
+  public npm-compatible registry access before package publication.
+outputs:
+  active:
+    description: Whether Socket Firewall protection remains active.
+    value: ${{ steps.teardown.outputs.active }}
+runs:
+  using: composite
+  steps:
+    - name: Restore public package registry
+      id: teardown
+      shell: bash
+      env:
+        # Test-only override is cleared for real action consumers.
+        SFW_HOSTS_FILE: ""
+        SFW_ROLLBACK_ONLY: "false"
+      run: bash "$GITHUB_ACTION_PATH/../scripts/teardown.sh"
