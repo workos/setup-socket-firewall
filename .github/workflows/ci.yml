@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   unit:
-    name: Socket Firewall action tests
+    name: Unit and release-tree tests
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -21,6 +21,7 @@ jobs:
           bash -n scripts/*.sh
           bash scripts/configure.test.sh
           bash scripts/teardown.test.sh
+          bash scripts/build-release.test.sh
 
   check-secret:
     name: Check secret availability

@@ -2,7 +2,7 @@
 
 Composite GitHub Actions for routing **public npm-compatible JavaScript/TypeScript dependency downloads** through the WorkOS Socket Firewall and restoring public-registry access before package publication.
 
-This repository exposes two action entrypoints from the same reviewed source version:
+This repository exposes two action entrypoints from the same action-only release commit:
 
 - `/` — configure protected dependency downloads.
 - `/teardown` — remove only SFW-owned configuration before an npm/pnpm/Yarn/Bun publish in the same job.
@@ -11,7 +11,13 @@ It does not route package publication or Python, Java, Go, Ruby, Rust, .NET, pri
 
 ## Immutable reference
 
-Consumer rollout remains blocked until the next layer in this stack creates and verifies an action-only release commit. Consumers will pin that commit's full 40-character SHA; mutable tags, branches, abbreviated SHAs, and normal source commits are not permitted.
+Consumers must pin the full 40-character SHA of the reviewed action-only `v1` commit. Do not execute a mutable tag, branch, abbreviated SHA, or normal source commit.
+
+```yaml
+uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+```
+
+The `v1` tag is for human discovery. The repository’s normal source history contains tests and rollout tooling; the action-only release tree contains only the files in `release-manifest.txt`.
 
 ## Strict internal/private usage
 
@@ -123,3 +129,14 @@ With no token, setup either:
 - Project config, environment, or direct arbitrary tarball/Git URLs can reference hosts outside the reviewed DNS list. Closing every arbitrary-host path requires network-level egress allowlisting and is outside this action.
 - `replace-registry-host=always` can redirect lockfile URLs for private/third-party registries. The WorkOS endpoint is not assumed to proxy them; private-registry jobs require separate Foundation review.
 - Dependency lifecycle code can read the host-scoped SFW credential while installation is running. The action restricts file permissions and token scope, requires ephemeral runners, and avoids job-wide token exposure, but cleanup cannot remove access retroactively.
+
+## Release process
+
+1. Merge reviewed source changes with all unit and token-backed smoke jobs green.
+2. Run `scripts/build-release.sh <empty-output-directory>`.
+3. Confirm the staged tree exactly matches `release-manifest.txt` and both action entrypoints run from it.
+4. Create and sign an orphan commit from that tree, push it to `action-release/v1`, and create the `v1` tag/release without retargeting an existing tag.
+5. Query the remote tree and record its full 40-character SHA.
+6. Use only that SHA in consumer PRs.
+
+Never tag the normal source branch as an action release: it contains tests and, after HELP-724 Phase 2, the one-time rollout verifier and report source.
