@@ -39,7 +39,9 @@ write_public_registry_environment() {
 clear_owned_node_auth_placeholder() {
   if [[ "${SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER:-false}" == 'true' ]]; then
     {
-      printf 'NODE_AUTH_TOKEN=\n'
+      if [[ "${NODE_AUTH_TOKEN:-}" == 'XXXXX-XXXXX-XXXXX-XXXXX' ]]; then
+        printf 'NODE_AUTH_TOKEN=\n'
+      fi
       printf 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=false\n'
     } >>"$GITHUB_ENV"
   fi

@@ -47,9 +47,10 @@ write_registry_environment() {
 configure_setup_node_placeholder() {
   local npmrc="${NPM_CONFIG_USERCONFIG:-${HOME}/.npmrc}"
   if [[ -z "${NODE_AUTH_TOKEN:-}" && -f "$npmrc" ]] && grep -Fq '${NODE_AUTH_TOKEN}' "$npmrc"; then
+    export NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX
     export SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true
     {
-      printf 'NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX\n'
+      printf 'NODE_AUTH_TOKEN=%s\n' "$NODE_AUTH_TOKEN"
       printf 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true\n'
     } >>"$GITHUB_ENV"
   fi

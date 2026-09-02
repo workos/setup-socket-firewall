@@ -168,6 +168,20 @@ test_owned_setup_node_placeholder_is_cleared() {
   cleanup_case
 }
 
+test_caller_replacement_token_is_preserved() {
+  new_case
+  export NODE_AUTH_TOKEN=caller-owned-token
+  export SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true
+
+  bash "$TEARDOWN" >/dev/null
+
+  if grep -Eq '^NODE_AUTH_TOKEN=' "$GITHUB_ENV"; then
+    fail 'caller-owned NODE_AUTH_TOKEN was cleared'
+  fi
+  assert_contains "$GITHUB_ENV" 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=false'
+  cleanup_case
+}
+
 test_bun_config_is_removed() {
   new_case
   export XDG_CONFIG_HOME="$CASE_DIR/xdg"
@@ -193,6 +207,7 @@ test_orphaned_sfw_auth_fails_before_public_restore
 test_effective_npmrc_outside_runner_roots_is_rejected
 test_unreadable_hosts_file_is_not_truncated
 test_owned_setup_node_placeholder_is_cleared
+test_caller_replacement_token_is_preserved
 test_bun_config_is_removed
 
 printf 'teardown tests passed\n'
