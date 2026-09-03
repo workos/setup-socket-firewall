@@ -17,7 +17,7 @@ Consumers must pin the full 40-character SHA of the reviewed action-only `v1` co
 uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
 ```
 
-The `v1` tag is for human discovery. The repository’s normal source history contains tests and rollout tooling; the action-only release tree contains only the files in `release-manifest.txt`.
+The moving `v1` tag and `action-release/v1` branch are for human discovery and Renovate lookup. The repository’s normal source history contains tests and rollout tooling; each action-only release commit contains only the files in `release-manifest.txt`.
 
 ## Strict internal/private usage
 
@@ -130,13 +130,17 @@ With no token, setup either:
 - `replace-registry-host=always` can redirect lockfile URLs for private/third-party registries. The WorkOS endpoint is not assumed to proxy them; private-registry jobs require separate Foundation review.
 - Dependency lifecycle code can read the host-scoped SFW credential while installation is running. The action restricts file permissions and token scope, requires ephemeral runners, and avoids job-wide token exposure, but cleanup cannot remove access retroactively.
 
-## Release process
+## Automated release process
 
-1. Merge reviewed source changes with all unit and token-backed smoke jobs green.
-2. Run `scripts/build-release.sh <empty-output-directory>`.
-3. Confirm the staged tree exactly matches `release-manifest.txt` and both action entrypoints run from it.
-4. Create and sign an orphan commit from that tree, push it to `action-release/v1`, and create the `v1` tag/release without retargeting an existing tag.
-5. Query the remote tree and record its full 40-character SHA.
-6. Use only that SHA in consumer PRs.
+No maintainer runs local release commands.
 
-Never tag the normal source branch as an action release: it contains tests and, after HELP-724 Phase 2, the one-time rollout verifier and report source.
+1. Merge reviewed source changes to `main`.
+2. The `CI` workflow validates the resulting main commit, including token-backed package-manager smokes.
+3. After successful main CI, `.github/workflows/release.yml` checks out that exact commit and builds the allowlisted tree with `scripts/build-release.sh`.
+4. `scripts/publish-release.sh` uploads that tree through GitHub's API, creates a GitHub-verified bot commit chained from the prior action-only release, and fails before updating refs if verification is absent.
+5. CI moves `action-release/v1` and the `v1` discovery tag to the release commit and writes its full SHA to the workflow summary. An unchanged runtime tree is a no-op.
+6. Consumer PRs use only the full action-only SHA. Renovate may discover updates through `v1`, but executable workflow references never use that mutable tag.
+
+The workflow uses only the repository-scoped `GITHUB_TOKEN` with `contents: write`, serializes releases, skips stale successful commits when `main` has advanced, and can be retried through `workflow_dispatch`. A future breaking release must change the reviewed channel to `v2`; it must not repurpose `v1`.
+
+Never publish the normal source commit as an action release: it contains tests and, after HELP-724 Phase 2, the one-time rollout verifier and report source.

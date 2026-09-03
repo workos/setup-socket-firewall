@@ -1,0 +1,85 @@
+name: Publish action release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: action-release-v1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish action-only v1
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Select current successful main commit
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$CANDIDATE_SHA" != "$current_main" ]]; then
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping stale successful main commit ${CANDIDATE_SHA}; current main is ${current_main}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${CANDIDATE_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the verified source commit
+        if: steps.source.outputs.current == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Build and validate action-only tree
+        if: steps.source.outputs.current == 'true'
+        id: build
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/action-release"
+          scripts/build-release.sh "$release_dir"
+          echo "release_dir=${release_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish verified release commit
+        if: steps.source.outputs.current == 'true'
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          scripts/publish-release.sh
+          "${{ steps.build.outputs.release_dir }}"
+          "${{ steps.source.outputs.source_sha }}"
+          v1
+
+      - name: Record release SHA
+        if: steps.source.outputs.current == 'true'
+        env:
+          RELEASE_SHA: ${{ steps.publish.outputs.release_sha }}
+          RELEASED: ${{ steps.publish.outputs.released }}
+          SOURCE_SHA: ${{ steps.publish.outputs.source_sha }}
+        run: |
+          {
+            echo '## Action release'
+            echo
+            echo "- Source: \`${SOURCE_SHA}\`"
+            echo "- Action-only SHA: \`${RELEASE_SHA}\`"
+            echo "- New tree published: \`${RELEASED}\`"
+            echo
+            echo '\`v1\` and \`action-release/v1\` are discovery refs; consumers must pin the full action-only SHA.'
+          } >> "$GITHUB_STEP_SUMMARY"
