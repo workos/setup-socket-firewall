@@ -35,6 +35,7 @@ new_case() {
   printf 'registry=https://registry.npmjs.org/\nalways-auth=true\n' >"$NPM_CONFIG_USERCONFIG"
   printf 'fund=false\n' >"$HOME/.npmrc"
   unset SFW_BUN_CONFIG_PATH SFW_CONFIGURE_BUN XDG_CONFIG_HOME
+  unset NODE_AUTH_TOKEN SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER
 }
 
 cleanup_case() {
@@ -127,7 +128,8 @@ test_orphaned_sfw_auth_fails_before_public_restore() {
 
 test_effective_npmrc_outside_runner_roots_is_rejected() {
   new_case
-  export NPM_CONFIG_USERCONFIG="$(dirname "$CASE_DIR")/outside.npmrc"
+  NPM_CONFIG_USERCONFIG="$(dirname "$CASE_DIR")/outside.npmrc"
+  export NPM_CONFIG_USERCONFIG
   printf 'unrelated=true\n' >"$NPM_CONFIG_USERCONFIG"
   set +e
   bash "$TEARDOWN" >/dev/null 2>&1
@@ -151,6 +153,32 @@ test_unreadable_hosts_file_is_not_truncated() {
   if [[ "$status" -ne 0 ]]; then
     assert_contains "$SFW_HOSTS_FILE" '127.0.0.1 localhost'
   fi
+  cleanup_case
+}
+
+test_owned_setup_node_placeholder_is_cleared() {
+  new_case
+  export NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX
+  export SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true
+
+  bash "$TEARDOWN" >/dev/null
+
+  grep -Fqx 'NODE_AUTH_TOKEN=' "$GITHUB_ENV" || fail 'owned NODE_AUTH_TOKEN placeholder was not cleared exactly'
+  assert_contains "$GITHUB_ENV" 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=false'
+  cleanup_case
+}
+
+test_caller_replacement_token_is_preserved() {
+  new_case
+  export NODE_AUTH_TOKEN=caller-owned-token
+  export SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=true
+
+  bash "$TEARDOWN" >/dev/null
+
+  if grep -Eq '^NODE_AUTH_TOKEN=' "$GITHUB_ENV"; then
+    fail 'caller-owned NODE_AUTH_TOKEN was cleared'
+  fi
+  assert_contains "$GITHUB_ENV" 'SFW_OWNS_NODE_AUTH_TOKEN_PLACEHOLDER=false'
   cleanup_case
 }
 
@@ -178,6 +206,8 @@ test_effective_npmrc_deduplicates_home_path
 test_orphaned_sfw_auth_fails_before_public_restore
 test_effective_npmrc_outside_runner_roots_is_rejected
 test_unreadable_hosts_file_is_not_truncated
+test_owned_setup_node_placeholder_is_cleared
+test_caller_replacement_token_is_preserved
 test_bun_config_is_removed
 
 printf 'teardown tests passed\n'

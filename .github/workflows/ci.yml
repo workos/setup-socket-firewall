@@ -14,7 +14,16 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check shell style and test coverage policy
+        run: |
+          set -euo pipefail
+          shellcheck --severity=warning scripts/*.sh
+          go run mvdan.cc/sh/v3/cmd/shfmt@v3.14.0 -d -i 2 -ci scripts/*.sh
+          for source in scripts/*.sh; do
+            [[ "$source" == *.test.sh ]] && continue
+            test -f "${source%.sh}.test.sh"
+          done
       - name: Run shell tests
         run: |
           set -euo pipefail
@@ -34,6 +43,17 @@ jobs:
       - name: Probe SOCKET_FIREWALL_TOKEN
         id: probe
         run: echo "has-token=${{ secrets.SOCKET_FIREWALL_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+      - name: Require token for trusted runs
+        env:
+          HAS_TOKEN: ${{ secrets.SOCKET_FIREWALL_TOKEN != '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          if [[ "$HAS_TOKEN" == false && !( "$EVENT_NAME" == pull_request && "$HEAD_IS_FORK" == true ) ]]; then
+            echo '::error::SOCKET_FIREWALL_TOKEN is required for trusted pull requests and default-branch runs.'
+            exit 1
+          fi
 
   smoke-with-token:
     name: Smoke test (${{ matrix.manager }}, with-token)
@@ -46,17 +66,17 @@ jobs:
       matrix:
         manager: [npm, pnpm, bun]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
 
       - name: Setup Bun
         if: matrix.manager == 'bun'
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
 
@@ -189,8 +209,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
@@ -226,8 +246,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
