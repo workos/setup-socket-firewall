@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const execFile = promisify(execFileCallback);
-const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_REPOSITORY_COUNT = 10_000;
 const MAX_REPOSITORY_PAGES = MAX_REPOSITORY_COUNT / DEFAULT_PAGE_SIZE;
@@ -66,6 +66,7 @@ export class GitHubClient {
     this.sleep = options.sleep ?? sleep;
     this.maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this.defaultRetryDelayMs = options.defaultRetryDelayMs ?? 1_000;
+    this.transientRetryDelayMs = options.transientRetryDelayMs ?? 5_000;
 
     if (!Number.isInteger(this.maxAttempts) || this.maxAttempts < 1) {
       throw new Error("maxAttempts must be a positive integer");
@@ -81,16 +82,24 @@ export class GitHubClient {
           error.status === 403 &&
           (error.retryAfterMs !== undefined ||
             /rate.?limit/i.test(error.message));
-        const retryable = error.status === 429 || rateLimited403;
+        const transientNetwork =
+          error.status === undefined &&
+          /timeout|timed out|connection re|unexpected EOF|temporary failure/i.test(
+            error.message,
+          );
+        const retryable =
+          error.status === 429 || rateLimited403 || transientNetwork;
         if (!retryable || attempt === this.maxAttempts) {
           throw new Error(`${description} failed: ${error.message}`, {
             cause: error,
           });
         }
 
+        const baseDelayMs = transientNetwork
+          ? this.transientRetryDelayMs
+          : this.defaultRetryDelayMs;
         const delay =
-          error.retryAfterMs ??
-          this.defaultRetryDelayMs * 2 ** Math.max(0, attempt - 1);
+          error.retryAfterMs ?? baseDelayMs * 2 ** Math.max(0, attempt - 1);
         await this.sleep(delay);
       }
     }
