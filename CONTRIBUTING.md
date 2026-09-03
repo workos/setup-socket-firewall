@@ -6,6 +6,7 @@ Thanks for helping improve the WorkOS Socket Firewall GitHub Action.
 
 - Bash on Linux or macOS
 - Go, for the pinned `shfmt` check
+- Node.js 22 and npm, for the source-only rollout verifier
 - ShellCheck
 - Passwordless `sudo` and a disposable Linux runner for integration testing that modifies `/etc/hosts`
 
@@ -23,11 +24,13 @@ bash scripts/configure.test.sh
 bash scripts/teardown.test.sh
 bash scripts/build-release.test.sh
 bash scripts/publish-release.test.sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm run check
 ```
 
 CI runs the same static and unit checks on every pull request. Token-backed GitHub-hosted smoke jobs additionally exercise every supported package manager.
 
-The minimum test-coverage policy is one shell test suite for every executable shell source file. Changes to supported package-manager behavior must also include a token-backed frozen-lockfile smoke test.
+The minimum test-coverage policy is one shell test suite for every executable shell source file. Verifier changes require Node fixture tests and must preserve exact REST/GraphQL inventory reconciliation. Changes to supported package-manager behavior must also include a token-backed frozen-lockfile smoke test.
 
 ## Pull request guidelines
 
