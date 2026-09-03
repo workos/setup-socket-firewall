@@ -226,6 +226,35 @@ test("classifier: pnpm action-setup run_install downloads", () => {
   assert.equal(result.jobs[0].status, "unprotected");
 });
 
+test("classifier: Corepack pnpm bootstrap bypasses SFW npm configuration", () => {
+  const lazyCorepack = classify(
+    workflow(
+      `  build:\n    steps:\n      - run: corepack enable\n      - uses: ${SETUP}\n        with: { token: "${PRIVATE_TOKEN}" }\n      - run: pnpm install --frozen-lockfile\n`,
+    ),
+  );
+  assert.equal(lazyCorepack.jobs[0].status, "unprotected");
+  assert.match(lazyCorepack.jobs[0].violations.join(" "), /Corepack.*lazily/);
+
+  const corepackDownload = classify(
+    workflow(
+      `  build:\n    steps:\n      - uses: ${SETUP}\n        with: { token: "${PRIVATE_TOKEN}" }\n      - run: corepack prepare pnpm@11.20.0 --activate\n`,
+    ),
+  );
+  assert.equal(corepackDownload.jobs[0].status, "unprotected");
+  assert.match(
+    corepackDownload.jobs[0].violations.join(" "),
+    /Corepack package-manager downloads/,
+  );
+
+  const npmBootstrap = classify(
+    workflow(
+      `  build:\n    steps:\n      - uses: ${SETUP}\n        with: { token: "${PRIVATE_TOKEN}" }\n      - run: npm install --global pnpm@11.20.0 --ignore-scripts\n      - run: pnpm install --frozen-lockfile\n`,
+    ),
+  );
+  assert.equal(npmBootstrap.jobs[0].status, "protected");
+  assert.deepEqual(npmBootstrap.jobs[0].violations, []);
+});
+
 test("classifier: local composite actions resolve or block", () => {
   const localActions = new Map([
     [

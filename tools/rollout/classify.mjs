@@ -166,9 +166,14 @@ export function classifyCommand(command) {
   if (name === "corepack") {
     const subcommand = firstSubcommand(words);
     if (subcommand === "enable" || subcommand === "disable") {
-      return { command, kind: "no-network" };
+      return { command, corepack: subcommand, kind: "no-network" };
     }
-    return { command, kind: "js-public-download", manager: "npm" };
+    return {
+      command,
+      corepack: subcommand ?? "implicit",
+      kind: "js-public-download",
+      manager: "npm",
+    };
   }
   if (name === "npm" || name === "pnpm" || name === "bun" || name === "yarn") {
     const subcommand = firstSubcommand(words);
@@ -423,6 +428,31 @@ function collectViolations(operations, context, triggers, job) {
       }
     }
   });
+
+  const corepackEnable = operations.findIndex(
+    (operation) => operation.corepack === "enable",
+  );
+  const firstPnpmDownload = operations.findIndex(
+    (operation) =>
+      operation.kind === "js-public-download" && operation.manager === "pnpm",
+  );
+  if (corepackEnable !== -1 && firstPnpmDownload > corepackEnable) {
+    violations.push(
+      "Corepack may lazily download pnpm directly from registry.npmjs.org; install the pinned pnpm package with npm through Socket Firewall before invoking pnpm",
+    );
+  }
+  if (
+    operations.some(
+      (operation) =>
+        operation.corepack !== undefined &&
+        operation.corepack !== "enable" &&
+        operation.corepack !== "disable",
+    )
+  ) {
+    violations.push(
+      "Corepack package-manager downloads do not use Socket Firewall npm configuration",
+    );
+  }
 
   const firstDownload = downloads[0];
   const validSetup = setups.find(
