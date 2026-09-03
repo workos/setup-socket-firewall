@@ -1,5 +1,0 @@
-LICENSE
-action.yml
-scripts/configure.sh
-scripts/teardown.sh
-teardown/action.yml
