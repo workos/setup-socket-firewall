@@ -2,7 +2,7 @@
 
 Composite GitHub Actions for routing **public npm-compatible JavaScript/TypeScript dependency downloads** through the WorkOS Socket Firewall and restoring public-registry access before package publication.
 
-This repository exposes two action entrypoints from the same reviewed source version:
+This repository exposes two action entrypoints from the same action-only release commit:
 
 - `/` — configure protected dependency downloads.
 - `/teardown` — remove only SFW-owned configuration before an npm/pnpm/Yarn/Bun publish in the same job.
@@ -11,7 +11,13 @@ It does not route package publication or Python, Java, Go, Ruby, Rust, .NET, pri
 
 ## Immutable reference
 
-Consumer rollout remains blocked until the next layer in this stack creates and verifies an action-only release commit. Consumers will pin that commit's full 40-character SHA; mutable tags, branches, abbreviated SHAs, and normal source commits are not permitted.
+Consumers must pin the full 40-character SHA of the reviewed action-only `v1` commit. Do not execute a mutable tag, branch, abbreviated SHA, or normal source commit.
+
+```yaml
+uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+```
+
+The moving `v1` tag and `action-release/v1` branch are for human discovery and Renovate lookup. The repository’s normal source history contains tests and rollout tooling; each action-only release commit contains only the files in `release-manifest.txt`.
 
 ## Strict internal/private usage
 
@@ -123,3 +129,18 @@ With no token, setup either:
 - Project config, environment, or direct arbitrary tarball/Git URLs can reference hosts outside the reviewed DNS list. Closing every arbitrary-host path requires network-level egress allowlisting and is outside this action.
 - `replace-registry-host=always` can redirect lockfile URLs for private/third-party registries. The WorkOS endpoint is not assumed to proxy them; private-registry jobs require separate Foundation review.
 - Dependency lifecycle code can read the host-scoped SFW credential while installation is running. The action restricts file permissions and token scope, requires ephemeral runners, and avoids job-wide token exposure, but cleanup cannot remove access retroactively.
+
+## Automated release process
+
+No maintainer runs local release commands.
+
+1. Merge reviewed source changes to `main`.
+2. The `CI` workflow validates the resulting main commit, including token-backed package-manager smokes.
+3. After successful main CI, `.github/workflows/release.yml` checks out that exact commit and builds the allowlisted tree with `scripts/build-release.sh`.
+4. `scripts/publish-release.sh` stages a GitHub-signed commit on a temporary branch—bootstrapped from the source commit for the first release and from the prior action-only release afterward—then requires both a valid GitHub signature and an exact tree match before updating release refs.
+5. CI moves `action-release/v1` and the `v1` discovery tag to the release commit and writes its full SHA to the workflow summary. An unchanged runtime tree is a no-op.
+6. Consumer PRs use only the full action-only SHA. Renovate may discover updates through `v1`, but executable workflow references never use that mutable tag.
+
+The workflow uses only the repository-scoped `GITHUB_TOKEN` with `contents: write`, serializes releases, skips stale successful commits when `main` has advanced, and can be retried through `workflow_dispatch`. A future breaking release must change the reviewed channel to `v2`; it must not repurpose `v1`.
+
+Never publish the normal source commit as an action release: it contains tests and, after HELP-724 Phase 2, the one-time rollout verifier and report source.
