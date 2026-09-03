@@ -24,7 +24,7 @@ jobs:
       - name: Configure Socket Firewall for verifier dependencies
         uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
         with:
-          token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+          token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
           allow-external-fork-fallback: true
       - name: Install verifier dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -59,18 +59,18 @@ jobs:
     outputs:
       has-token: ${{ steps.probe.outputs.has-token }}
     steps:
-      - name: Probe SOCKET_FIREWALL_TOKEN
+      - name: Probe PUBLIC_SOCKET_FIREWALL_TOKEN
         id: probe
-        run: echo "has-token=${{ secrets.SOCKET_FIREWALL_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+        run: echo "has-token=${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
       - name: Require token for trusted runs
         env:
-          HAS_TOKEN: ${{ secrets.SOCKET_FIREWALL_TOKEN != '' }}
+          HAS_TOKEN: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN != '' }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         run: |
           set -euo pipefail
           if [[ "$HAS_TOKEN" == false && !( "$EVENT_NAME" == pull_request && "$HEAD_IS_FORK" == true ) ]]; then
-            echo '::error::SOCKET_FIREWALL_TOKEN is required for trusted pull requests and default-branch runs.'
+            echo '::error::PUBLIC_SOCKET_FIREWALL_TOKEN is required for trusted pull requests and default-branch runs.'
             exit 1
           fi
 
@@ -105,7 +105,7 @@ jobs:
         id: sfw
         uses: ./
         with:
-          token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+          token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
           configure-bun: ${{ matrix.manager == 'bun' }}
 
       - name: Assert protected configuration
@@ -241,7 +241,7 @@ jobs:
       - name: Configure Socket Firewall
         uses: ./
         with:
-          token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+          token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
 
       - name: Prove public-resolved Yarn lockfile fails closed
         run: |

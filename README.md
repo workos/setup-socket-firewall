@@ -47,7 +47,7 @@ For a Bun dependency-install job, also set `configure-bun: true`. This writes a 
 
 The token is fail-closed by default. Private, internal, trusted/default-branch, and Dependabot jobs stop before dependency download when the token is absent.
 
-`SOCKET_FIREWALL_TOKEN` is an organization secret. Dependabot uses a separate secret store: provision the same secret there for dependency-update runs that must pass, or accept the intentional fail-closed result. Ask in `#ask-foundation` about repository selection or token delivery.
+`SOCKET_FIREWALL_TOKEN` is an organization secret available to private and internal repositories. Public repositories never receive it; an approved public repository is instead individually selected into the separate `PUBLIC_SOCKET_FIREWALL_TOKEN` organization secret and passes that secret to the same `token` input. Dependabot uses a separate secret store: provision the same secret there for dependency-update runs that must pass, or accept the intentional fail-closed result. Ask in `#ask-foundation` about repository selection or token delivery.
 
 ### Public external-fork usage
 
@@ -69,7 +69,7 @@ steps:
   - name: Configure Socket Firewall
     uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
     with:
-      token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+      token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
       allow-external-fork-fallback: true
 
   - run: npm ci
