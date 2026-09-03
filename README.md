@@ -137,7 +137,7 @@ No maintainer runs local release commands.
 1. Merge reviewed source changes to `main`.
 2. The `CI` workflow validates the resulting main commit, including token-backed package-manager smokes.
 3. After successful main CI, `.github/workflows/release.yml` checks out that exact commit and builds the allowlisted tree with `scripts/build-release.sh`.
-4. `scripts/publish-release.sh` uploads that tree through GitHub's API, creates a GitHub-verified bot commit chained from the prior action-only release, and fails before updating refs if verification is absent.
+4. `scripts/publish-release.sh` stages a GitHub-signed commit on a temporary branch—bootstrapped from the source commit for the first release and from the prior action-only release afterward—then requires both a valid GitHub signature and an exact tree match before updating release refs.
 5. CI moves `action-release/v1` and the `v1` discovery tag to the release commit and writes its full SHA to the workflow summary. An unchanged runtime tree is a no-op.
 6. Consumer PRs use only the full action-only SHA. Renovate may discover updates through `v1`, but executable workflow references never use that mutable tag.
 
