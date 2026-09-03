@@ -1,43 +1,44 @@
 name: Setup Socket Firewall
 description: >-
-  Route npm installs through the WorkOS Socket Firewall registry and
-  null-route registry.npmjs.org so installs cannot silently fall back to
-  the public registry.
+  Route public npm-compatible dependency downloads through the WorkOS Socket
+  Firewall and DNS-null-route known public JavaScript registries.
 inputs:
   token:
     description: >-
-      Socket Firewall auth token. Pass secrets.SOCKET_FIREWALL_TOKEN.
-      When empty (e.g. fork PRs on public repos, where secrets are
-      unavailable), the action emits a warning and leaves the public
-      registry reachable.
+      Socket Firewall auth token. Pass secrets.SOCKET_FIREWALL_TOKEN directly
+      to this action; do not expose it at workflow or job scope.
     required: false
     default: ""
+  allow-external-fork-fallback:
+    description: >-
+      Permit public-registry fallback only for an external pull request against
+      a public repository. The action independently validates the event context.
+    required: false
+    default: "false"
+  configure-bun:
+    description: >-
+      Configure Bun's user-level registry token file. Enable only for Bun
+      dependency-install jobs.
+    required: false
+    default: "false"
+outputs:
+  active:
+    description: Whether Socket Firewall protection is active.
+    value: ${{ steps.configure.outputs.active }}
 runs:
   using: composite
   steps:
-    - name: Configure npm registry and null-route public registry
+    - name: Configure Socket Firewall
+      id: configure
       shell: bash
       env:
         SFW_TOKEN: ${{ inputs.token }}
-      run: |
-        if [ -z "$SFW_TOKEN" ]; then
-          echo "::warning title=Socket Firewall not active::SOCKET_FIREWALL_TOKEN not provided — npm installs will use the public registry. See workos/setup-socket-firewall README."
-          exit 0
-        fi
-
-        # Registry + host-scoped auth token, written with restrictive
-        # permissions since the file contains a credential.
-        umask 077
-        {
-          echo "registry=https://socket-firewall.workos.dev/"
-          echo "//socket-firewall.workos.dev/:_authToken=${SFW_TOKEN}"
-        } >> ~/.npmrc
-        chmod 600 ~/.npmrc
-
-        # Null-route the public registry (IPv4 + IPv6) so any install that
-        # bypasses the npmrc fails loudly instead of silently reaching
-        # registry.npmjs.org. Same pattern as the workos/workos init action
-        # (INFRA-5509).
-        printf '127.0.0.1 registry.npmjs.org\n::1 registry.npmjs.org\n' | sudo tee -a /etc/hosts >/dev/null
-
-        echo "Socket Firewall active: npm registry -> https://socket-firewall.workos.dev/; registry.npmjs.org null-routed."
+        SFW_ALLOW_EXTERNAL_FORK_FALLBACK: ${{ inputs.allow-external-fork-fallback }}
+        SFW_CONFIGURE_BUN: ${{ inputs.configure-bun }}
+        SFW_EVENT_NAME: ${{ github.event_name }}
+        SFW_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        SFW_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        SFW_BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+        # Test-only override is cleared for real action consumers.
+        SFW_HOSTS_FILE: ""
+      run: bash "$GITHUB_ACTION_PATH/scripts/configure.sh"
