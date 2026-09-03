@@ -15,6 +15,25 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Configure Socket Firewall for verifier dependencies
+        uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
+        with:
+          token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+          allow-external-fork-fallback: true
+      - name: Install verifier dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Remove Socket Firewall credentials before executing verifier source
+        uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
+      - name: Run verifier foundation tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check
       - name: Check shell style and test coverage policy
         run: |
           set -euo pipefail
@@ -67,6 +86,8 @@ jobs:
         manager: [npm, pnpm, bun]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -210,6 +231,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -247,6 +270,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22

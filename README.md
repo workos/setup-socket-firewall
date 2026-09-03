@@ -16,7 +16,7 @@ It does not route package publication or Python, Java, Go, Ruby, Rust, .NET, pri
 Consumers must pin the full 40-character SHA of the reviewed action-only `v1` commit. Do not execute a mutable tag, branch, abbreviated SHA, or normal source commit.
 
 ```yaml
-uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
 ```
 
 The moving `v1` tag and `action-release/v1` branch are for human discovery and Renovate lookup. The repository’s normal source history contains tests and rollout tooling; each action-only release commit contains only the files in `release-manifest.txt`.
@@ -36,7 +36,7 @@ Run package-manager setup first, then configure SFW before the first dependency 
     registry-url: https://registry.npmjs.org/
 
 - name: Configure Socket Firewall
-  uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+  uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
   with:
     token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
 
@@ -67,7 +67,7 @@ steps:
       node-version: 22
 
   - name: Configure Socket Firewall
-    uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+    uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
     with:
       token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
       allow-external-fork-fallback: true
@@ -87,7 +87,7 @@ When an existing job must both install and publish, run the teardown entrypoint 
 
 ```yaml
 - name: Configure Socket Firewall
-  uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+  uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
   with:
     token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
 
@@ -95,7 +95,7 @@ When an existing job must both install and publish, run the teardown entrypoint 
 - run: pnpm build
 
 - name: Restore public package registry
-  uses: workos/setup-socket-firewall/teardown@<SAME_FULL_40_CHARACTER_V1_SHA> # v1
+  uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
 
 - name: Publish package
   run: pnpm publish --access public --provenance --no-git-checks
@@ -148,7 +148,20 @@ No maintainer runs local release commands.
 
 The workflow uses only the repository-scoped `GITHUB_TOKEN` with `contents: write`, serializes releases, skips stale successful commits when `main` has advanced, and can be retried through `workflow_dispatch`. A future breaking release must change the reviewed channel to `v2`; it must not repurpose `v1`.
 
-Never publish the normal source commit as an action release: it contains tests and, after HELP-724 Phase 2, the one-time rollout verifier and report source.
+Never publish the normal source commit as an action release: it contains tests and the one-time HELP-724 rollout verifier source.
+
+## Rollout verifier
+
+The source branch contains operator-only verification tooling that never enters the action release. Its foundation validates the signed action tree and independently reconciles REST and GraphQL WorkOS repository inventories:
+
+```bash
+npm ci --ignore-scripts
+npm test
+npm run verify-action
+npm run inventory
+```
+
+`inventory` requires an existing `gh` session with `repo` and `read:org`. It is read-only, accepts no configuration flags, and fails unless both inventory sources return exactly the same active repository set. Its output can contain internal repository names; do not attach it to a public issue or workflow log.
 
 ## Contributing
 

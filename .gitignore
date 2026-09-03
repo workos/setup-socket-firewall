@@ -1,0 +1,5 @@
+node_modules/
+*.inventory.json
+reports/*
+!reports/.gitkeep
+!reports/socket-firewall-ci-rollout-final.json

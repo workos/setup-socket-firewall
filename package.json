@@ -1,0 +1,25 @@
+{
+  "name": "@workos/setup-socket-firewall-rollout",
+  "version": "0.0.0",
+  "private": true,
+  "description": "One-time HELP-724 rollout verification tooling",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "npm run format:check && npm test && npm run verify-action",
+    "format": "prettier --write package.json tools/rollout/*.mjs",
+    "format:check": "prettier --check package.json tools/rollout/*.mjs",
+    "inventory": "node tools/rollout/cli.mjs inventory",
+    "test": "node --test tools/rollout/*.test.mjs",
+    "test:unit": "node --test tools/rollout/rollout.test.mjs",
+    "verify-action": "node tools/rollout/cli.mjs verify-action"
+  },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}
