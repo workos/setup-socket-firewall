@@ -22,6 +22,7 @@ bash -n scripts/*.sh
 bash scripts/configure.test.sh
 bash scripts/teardown.test.sh
 bash scripts/build-release.test.sh
+bash scripts/publish-release.test.sh
 ```
 
 CI runs the same static and unit checks on every pull request. Token-backed GitHub-hosted smoke jobs additionally exercise every supported package manager.
@@ -38,6 +39,6 @@ The minimum test-coverage policy is one shell test suite for every executable sh
 
 ## Releases
 
-Maintainers create releases from the allowlisted tree in `release-manifest.txt`. Do not manually edit or tag the release branch, and never direct consumers to a source-branch SHA or mutable tag.
+Successful `main` CI automatically builds and publishes the allowlisted action tree. Do not run release commands locally or manually edit/tag `action-release/v1`. If automation fails, diagnose or rerun the `Publish action release` workflow in GitHub Actions. Consumers must use the full action-only SHA, never a source-branch SHA or mutable tag.
 
 For security-sensitive reports, follow [`SECURITY.md`](./SECURITY.md) instead of opening a public issue.
