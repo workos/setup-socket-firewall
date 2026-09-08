@@ -81,5 +81,5 @@ jobs:
             echo "- Action-only SHA: \`${RELEASE_SHA}\`"
             echo "- New tree published: \`${RELEASED}\`"
             echo
-            echo '\`v1\` and \`action-release/v1\` are discovery refs; consumers must pin the full action-only SHA.'
+            echo "\`v1\` and \`action-release/v1\` are discovery refs; consumers must pin the full action-only SHA."
           } >> "$GITHUB_STEP_SUMMARY"
