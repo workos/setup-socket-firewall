@@ -51,7 +51,7 @@ The token is fail-closed by default. Private, internal, trusted/default-branch, 
 
 ### Public external-fork usage
 
-Ordinary external-fork pull requests cannot receive organization secrets. A public repository may explicitly allow a public-registry fallback for that context only:
+Ordinary external-fork pull requests cannot receive organization secrets. A public repository should use `PUBLIC_SOCKET_FIREWALL_TOKEN` and may explicitly allow a public-registry fallback for that context only:
 
 ```yaml
 permissions:
@@ -69,7 +69,7 @@ steps:
   - name: Configure Socket Firewall
     uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
     with:
-      token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
+      token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
       allow-external-fork-fallback: true
 
   - run: npm ci
