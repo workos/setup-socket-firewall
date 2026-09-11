@@ -5,6 +5,7 @@ Thanks for helping improve the WorkOS Socket Firewall GitHub Action.
 ## Development requirements
 
 - Bash on Linux or macOS
+- Node.js 22 or later, for npm lockfile transformation, tests, and release validation
 - Go, for the pinned `shfmt` check
 - ShellCheck
 - Passwordless `sudo` and a disposable Linux runner for integration testing that modifies `/etc/hosts`
@@ -21,11 +22,13 @@ go run mvdan.cc/sh/v3/cmd/shfmt@v3.14.0 -d -i 2 -ci scripts/*.sh
 bash -n scripts/*.sh
 bash scripts/configure.test.sh
 bash scripts/teardown.test.sh
+bash scripts/scrub-lockfile.test.sh
+node --test scripts/scrub-npm-lockfile.test.mjs
 bash scripts/build-release.test.sh
 bash scripts/publish-release.test.sh
 ```
 
-CI runs the same static and unit checks on every pull request. Token-backed GitHub-hosted smoke jobs additionally exercise every supported package manager.
+CI runs the same static and unit checks on every pull request. The npm scrub smoke matrix runs the composite action and `npm ci --ignore-scripts` against both npm filenames and lockfile versions 1–3 without credentials. Token-backed GitHub-hosted smoke jobs additionally exercise every supported package manager and a scrubbed npm lockfile with public registry DNS blocked.
 
 The minimum test-coverage policy is one shell test suite for every executable shell source file. Changes to supported package-manager behavior must also include a token-backed frozen-lockfile smoke test.
 

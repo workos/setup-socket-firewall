@@ -21,10 +21,10 @@ expect_build_failure() {
 prepare_source_copy() {
   local destination="$1"
   mkdir -p "$destination/scripts" "$destination/teardown" "$destination/lockfile-scrub"
-  cp "$ROOT/action.yml" "$ROOT/release-manifest.txt" "$destination/"
+  cp "$ROOT/LICENSE" "$ROOT/action.yml" "$ROOT/release-manifest.txt" "$destination/"
   cp "$ROOT/teardown/action.yml" "$destination/teardown/"
   cp "$ROOT/lockfile-scrub/action.yml" "$destination/lockfile-scrub/"
-  cp "$ROOT/scripts/build-release.sh" "$ROOT/scripts/configure.sh" "$ROOT/scripts/teardown.sh" "$ROOT/scripts/scrub-lockfile.sh" "$destination/scripts/"
+  cp "$ROOT/scripts/build-release.sh" "$ROOT/scripts/configure.sh" "$ROOT/scripts/teardown.sh" "$ROOT/scripts/scrub-lockfile.sh" "$ROOT/scripts/scrub-npm-lockfile.mjs" "$destination/scripts/"
 }
 
 "${ROOT}/scripts/build-release.sh" "${CASE_DIR}/release" >/dev/null
@@ -75,6 +75,14 @@ printf '\nif then\n' >>"${syntax_source}/scripts/configure.sh"
 expect_build_failure "${syntax_source}/scripts/build-release.sh" "${CASE_DIR}/syntax-output"
 [[ ! -e "${CASE_DIR}/syntax-output" ]] || fail 'syntax failure left partial output behind'
 
+# A prepared fixture must build successfully before corrupting a runtime file.
+node_source="${CASE_DIR}/node-source"
+prepare_source_copy "$node_source"
+"${node_source}/scripts/build-release.sh" "${CASE_DIR}/node-valid" >/dev/null
+printf '\nconst = ;\n' >>"${node_source}/scripts/scrub-npm-lockfile.mjs"
+expect_build_failure "${node_source}/scripts/build-release.sh" "${CASE_DIR}/node-invalid"
+[[ ! -e "${CASE_DIR}/node-invalid" ]] || fail 'npm syntax failure left output behind'
+
 expected="${CASE_DIR}/expected"
 actual="${CASE_DIR}/actual"
 grep -Ev '^[[:space:]]*(#|$)' "${ROOT}/release-manifest.txt" | LC_ALL=C sort >"$expected"
@@ -84,7 +92,7 @@ grep -Ev '^[[:space:]]*(#|$)' "${ROOT}/release-manifest.txt" | LC_ALL=C sort >"$
 ) >"$actual"
 diff -u "$expected" "$actual"
 
-for forbidden in README.md package.json package-lock.json reports tools .github scripts/configure.test.sh scripts/teardown.test.sh scripts/scrub-lockfile.test.sh scripts/build-release.sh scripts/build-release.test.sh scripts/publish-release.sh scripts/publish-release.test.sh; do
+for forbidden in README.md package.json package-lock.json reports tools .github scripts/configure.test.sh scripts/teardown.test.sh scripts/scrub-lockfile.test.sh scripts/scrub-npm-lockfile.test.mjs scripts/build-release.sh scripts/build-release.test.sh scripts/publish-release.sh scripts/publish-release.test.sh; do
   [[ ! -e "${CASE_DIR}/release/${forbidden}" ]] || fail "forbidden release path present: ${forbidden}"
 done
 
@@ -95,5 +103,14 @@ done
 grep -Fq 'bash "$GITHUB_ACTION_PATH/scripts/configure.sh"' "${CASE_DIR}/release/action.yml" || fail 'root action does not invoke its shipped configure script'
 grep -Fq 'bash "$GITHUB_ACTION_PATH/../scripts/teardown.sh"' "${CASE_DIR}/release/teardown/action.yml" || fail 'teardown action does not invoke its shipped teardown script'
 grep -Fq 'bash "$GITHUB_ACTION_PATH/../scripts/scrub-lockfile.sh"' "${CASE_DIR}/release/lockfile-scrub/action.yml" || fail 'lockfile scrub action does not invoke its shipped script'
+
+# Run the shipped wrapper from the isolated release tree, not the source tree.
+mkdir "${CASE_DIR}/npm-workspace"
+printf '{"lockfileVersion":3,"resolved":"https://socket-firewall.workos.dev/pkg/-/pkg-1.tgz"}\n' >"${CASE_DIR}/npm-workspace/package-lock.json"
+GITHUB_WORKSPACE="${CASE_DIR}/npm-workspace" GITHUB_OUTPUT="${CASE_DIR}/npm-output" \
+  SFW_SCRUB_MODE=apply SFW_SCRUB_LOCKFILE=package-lock.json \
+  bash "${CASE_DIR}/release/scripts/scrub-lockfile.sh"
+grep -Fq 'https://registry.npmjs.org/pkg/-/pkg-1.tgz' "${CASE_DIR}/npm-workspace/package-lock.json" || fail 'shipped npm scrub failed'
+grep -Fxq 'changed=true' "${CASE_DIR}/npm-output" || fail 'shipped npm scrub output missing'
 
 printf 'release tree tests passed\n'

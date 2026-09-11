@@ -26,6 +26,7 @@ new_case() {
   export GITHUB_OUTPUT="${CASE_DIR}/github-output"
   mkdir -p "$GITHUB_WORKSPACE"
   : >"$GITHUB_OUTPUT"
+  unset SFW_SCRUB_LOCKFILE
 }
 
 cleanup_case() {
@@ -119,9 +120,42 @@ test_invalid_mode_is_rejected() {
   cleanup_case
 }
 
+test_explicit_nested_bun_lockfile() {
+  new_case
+  write_lockfile
+  cp "${GITHUB_WORKSPACE}/bun.lock" "${CASE_DIR}/before"
+  mkdir "${GITHUB_WORKSPACE}/nested dir"
+  cp "${GITHUB_WORKSPACE}/bun.lock" "${GITHUB_WORKSPACE}/nested dir/bun.lock"
+  SFW_SCRUB_MODE=apply SFW_SCRUB_LOCKFILE='nested dir/bun.lock' bash "$SCRIPT"
+  assert_contains "$GITHUB_OUTPUT" 'changed=true'
+  assert_not_contains "${GITHUB_WORKSPACE}/nested dir/bun.lock" 'https://socket-firewall.workos.dev/'
+  cmp "${CASE_DIR}/before" "${GITHUB_WORKSPACE}/bun.lock" || fail 'unselected root lockfile changed'
+  : >"$GITHUB_OUTPUT"
+  SFW_SCRUB_MODE=apply SFW_SCRUB_LOCKFILE='nested dir/bun.lock' bash "$SCRIPT"
+  assert_contains "$GITHUB_OUTPUT" 'changed=false'
+  cleanup_case
+}
+
+test_unrecognized_bun_url_fails_without_mutation() {
+  new_case
+  write_lockfile
+  printf 'unquoted https://socket-firewall.workos.dev/broken\n' >>"${GITHUB_WORKSPACE}/bun.lock"
+  cp "${GITHUB_WORKSPACE}/bun.lock" "${CASE_DIR}/before"
+  for scrub_mode in check apply; do
+    if SFW_SCRUB_MODE="$scrub_mode" bash "$SCRIPT" >/dev/null 2>&1; then
+      fail 'unrecognized Bun URL succeeded'
+    fi
+    cmp "${CASE_DIR}/before" "${GITHUB_WORKSPACE}/bun.lock" || fail 'failure modified original lockfile'
+    [[ ! -s "$GITHUB_OUTPUT" ]] || fail 'failed scrub emitted success output'
+  done
+  cleanup_case
+}
+
 test_action_wires_changed_output_and_script() {
   assert_contains "$ACTION" 'value: ${{ steps.scrub.outputs.changed }}'
   assert_contains "$ACTION" 'run: bash "$GITHUB_ACTION_PATH/../scripts/scrub-lockfile.sh"'
+  assert_contains "$ACTION" 'default: bun.lock'
+  assert_contains "$ACTION" 'SFW_SCRUB_LOCKFILE: ${{ inputs.lockfile }}'
 }
 
 test_clean_lockfile_reports_unchanged
@@ -130,6 +164,8 @@ test_apply_mode_restores_native_bun_fields
 test_apply_mode_rewrites_multiple_sfw_urls
 test_missing_or_symlink_lockfile_is_rejected
 test_invalid_mode_is_rejected
+test_explicit_nested_bun_lockfile
+test_unrecognized_bun_url_fails_without_mutation
 test_action_wires_changed_output_and_script
 
 printf 'scrub lockfile tests passed\n'

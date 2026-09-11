@@ -4,11 +4,11 @@
 
 Composite GitHub Actions for routing **public npm-compatible JavaScript/TypeScript dependency downloads** through the WorkOS Socket Firewall and restoring public-registry access before package publication.
 
-This repository exposes two action entrypoints from the same action-only release commit:
+This repository exposes three action entrypoints from the same action-only release commit:
 
 - `/` — configure protected dependency downloads.
 - `/teardown` — remove only SFW-owned configuration before an npm/pnpm/Yarn/Bun publish in the same job.
-- `/lockfile-scrub` — detect or normalize Socket Firewall tarball URLs in a root Bun lockfile.
+- `/lockfile-scrub` — detect or normalize Socket Firewall registry URLs in Bun and npm lockfiles.
 
 It does not route package publication or Python, Java, Go, Ruby, Rust, .NET, private-registry, or other dependency ecosystems through the WorkOS SFW instance.
 
@@ -80,21 +80,42 @@ The action independently requires a `pull_request` event from a different reposi
 
 Do not use this action in an install-bearing `pull_request_target` job. Such workflows can combine base-repository secrets with contributor-controlled checkout, lockfiles, scripts, local/reusable actions, or artifacts. Apply the same review to `workflow_run`, `issue_comment`, `workflow_dispatch`, reusable workflows with inherited secrets, and artifact handoffs whenever they select an untrusted ref or input. Redesign that trust boundary before enabling SFW.
 
-### Bun lockfile cleanup
+### Bun and npm lockfile cleanup
 
-Bun records an absolute tarball URL when it installs through Socket Firewall. Its native portable representation uses an empty resolved-URL field, so a committed `bun.lock` should not retain `https://socket-firewall.workos.dev/...` URLs.
+Registry URLs saved in lockfiles can bind future installations to Socket Firewall even when the installer has no access to it. `/lockfile-scrub` provides an optional backstop for Bun and npm; npm's `omit-lockfile-registry-resolved=true` remains the preferred preventive configuration.
 
-`/lockfile-scrub` operates only on the caller workspace's root `bun.lock`. It takes no token and never runs package code. `check` is the default: it leaves the file unchanged and exposes `changed=true` when a cleanup is required. `apply` replaces only quoted Socket Firewall tarball URLs with Bun's native empty URL field.
+| Selected filename | Cleanup |
+| --- | --- |
+| `bun.lock` (default) | Replace quoted Socket Firewall tarball URLs with Bun's native empty resolved-URL field (`""`). |
+| `package-lock.json` | Replace the exact `https://socket-firewall.workos.dev/` prefix in JSON `resolved` string values with `https://registry.npmjs.org/`. |
+| `npm-shrinkwrap.json` | Same npm transform; lockfile versions 1, 2, and 3 are supported for both npm filenames. |
+
+The npm transform preserves tarball paths, query strings, fragments, versions, integrity hashes, formatting, and unrelated values. It does not remove npm `resolved` fields or blank their URLs. Malformed or unsupported-version npm JSON fails without changing the selected file.
+
+The action handles **one explicitly selected lockfile** per invocation. `lockfile` is a workspace-relative path and defaults to `bun.lock`, retaining the Bun-only caller behavior. Nested paths such as `apps/site/package-lock.json` are supported. Missing files, unrecognized filenames, traversal, and symlinked files or directories fail. There is no automatic scan of other lockfiles, `node_modules`, or repository history; use separate invocations for multiple locks. Yarn, pnpm, and binary `bun.lockb` are not supported by this scrub action.
+
+`mode: check` is the default: the file stays byte-identical and `changed=true` means a supported repair is needed. Detecting a supported repair does **not** fail the step; a caller enforcing check-only behavior must fail when that output is true. An unrecognized Bun SFW URL that cannot be normalized fails in both modes without replacing the original file. `mode: apply` performs the same repair and reports whether it changed the file; repeating it is a no-op. The action receives no token, installs nothing, runs no package code, and never commits or pushes. npm scrubbing requires Node.js 22 or later on PATH; Bun retains its Bash/coreutils requirements. Neither mode requires sudo or Socket Firewall configuration.
 
 ```yaml
-- name: Check Bun lockfile for Socket Firewall URLs
+- uses: actions/setup-node@<PINNED_SHA>
+  with:
+    node-version: 22
+
+- name: Check npm lockfile for Socket Firewall URLs
   id: scrub
   uses: workos/setup-socket-firewall/lockfile-scrub@<FULL_40_CHARACTER_V1_SHA> # v1
   with:
+    lockfile: package-lock.json
     mode: check
+
+- name: Reject a lockfile that needs repair
+  if: steps.scrub.outputs.changed == 'true'
+  run: |
+    echo '::error::Normalize Socket Firewall registry URLs before committing this lockfile.'
+    exit 1
 ```
 
-A same-repository pull-request workflow may run `apply`, verify that no SFW URL remains, then commit only `bun.lock` with its scoped `GITHUB_TOKEN`. Keep that Git write in the caller workflow—not in this action—and never use `pull_request_target` or write to an external fork. GitHub does not trigger another Actions run for a `GITHUB_TOKEN` push, so validate the transformed working tree before committing.
+A same-repository pull-request workflow may instead run `apply`, validate the transformed file, then commit **only that selected lockfile** with its scoped `GITHUB_TOKEN`. Keep Git writes in the caller workflow, restrict the trigger to relevant lockfile changes, and never use `pull_request_target` or write to an external fork. A `GITHUB_TOKEN` push does not trigger another Actions run: validating the transformed file is not a replacement for all CI checks on the new commit. Repositories requiring fresh-head checks need a separately reviewed solution before enabling auto-commits.
 
 ### Package publication
 

@@ -106,6 +106,7 @@ diff -u "$expected" "$actual"
 bash -n "${staging}/scripts/configure.sh"
 bash -n "${staging}/scripts/teardown.sh"
 bash -n "${staging}/scripts/scrub-lockfile.sh"
+node --check "${staging}/scripts/scrub-npm-lockfile.mjs"
 
 if [[ "$OUTPUT_WAS_EXISTING" == 'true' ]]; then
   [[ ! -L "$OUTPUT" && -d "$OUTPUT" && -z "$(find "$OUTPUT" -mindepth 1 -print -quit)" ]] || {
