@@ -1,0 +1,22 @@
+name: Scrub Socket Firewall Bun lockfile URLs
+description: >-
+  Detect or remove Socket Firewall tarball URLs from the root Bun lockfile,
+  restoring Bun's portable empty resolved-URL fields.
+inputs:
+  mode:
+    description: Check for URLs without changing bun.lock, or apply the normalization.
+    required: false
+    default: check
+outputs:
+  changed:
+    description: Whether bun.lock contains or contained a Socket Firewall tarball URL.
+    value: ${{ steps.scrub.outputs.changed }}
+runs:
+  using: composite
+  steps:
+    - name: Scrub Bun lockfile
+      id: scrub
+      shell: bash
+      env:
+        SFW_SCRUB_MODE: ${{ inputs.mode }}
+      run: bash "$GITHUB_ACTION_PATH/../scripts/scrub-lockfile.sh"

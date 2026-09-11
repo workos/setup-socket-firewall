@@ -2,4 +2,6 @@ LICENSE
 action.yml
 scripts/configure.sh
 scripts/teardown.sh
+scripts/scrub-lockfile.sh
 teardown/action.yml
+lockfile-scrub/action.yml

@@ -30,6 +30,7 @@ jobs:
           bash -n scripts/*.sh
           bash scripts/configure.test.sh
           bash scripts/teardown.test.sh
+          bash scripts/scrub-lockfile.test.sh
           bash scripts/build-release.test.sh
           bash scripts/publish-release.test.sh
 

@@ -20,10 +20,11 @@ expect_build_failure() {
 
 prepare_source_copy() {
   local destination="$1"
-  mkdir -p "$destination/scripts" "$destination/teardown"
+  mkdir -p "$destination/scripts" "$destination/teardown" "$destination/lockfile-scrub"
   cp "$ROOT/action.yml" "$ROOT/release-manifest.txt" "$destination/"
   cp "$ROOT/teardown/action.yml" "$destination/teardown/"
-  cp "$ROOT/scripts/build-release.sh" "$ROOT/scripts/configure.sh" "$ROOT/scripts/teardown.sh" "$destination/scripts/"
+  cp "$ROOT/lockfile-scrub/action.yml" "$destination/lockfile-scrub/"
+  cp "$ROOT/scripts/build-release.sh" "$ROOT/scripts/configure.sh" "$ROOT/scripts/teardown.sh" "$ROOT/scripts/scrub-lockfile.sh" "$destination/scripts/"
 }
 
 "${ROOT}/scripts/build-release.sh" "${CASE_DIR}/release" >/dev/null
@@ -83,14 +84,16 @@ grep -Ev '^[[:space:]]*(#|$)' "${ROOT}/release-manifest.txt" | LC_ALL=C sort >"$
 ) >"$actual"
 diff -u "$expected" "$actual"
 
-for forbidden in README.md package.json package-lock.json reports tools .github scripts/configure.test.sh scripts/teardown.test.sh scripts/build-release.sh scripts/build-release.test.sh scripts/publish-release.sh scripts/publish-release.test.sh; do
+for forbidden in README.md package.json package-lock.json reports tools .github scripts/configure.test.sh scripts/teardown.test.sh scripts/scrub-lockfile.test.sh scripts/build-release.sh scripts/build-release.test.sh scripts/publish-release.sh scripts/publish-release.test.sh; do
   [[ ! -e "${CASE_DIR}/release/${forbidden}" ]] || fail "forbidden release path present: ${forbidden}"
 done
 
 [[ -x "${CASE_DIR}/release/scripts/configure.sh" ]] || fail 'configure.sh lost executable mode'
 [[ -x "${CASE_DIR}/release/scripts/teardown.sh" ]] || fail 'teardown.sh lost executable mode'
+[[ -x "${CASE_DIR}/release/scripts/scrub-lockfile.sh" ]] || fail 'scrub-lockfile.sh lost executable mode'
 
 grep -Fq 'bash "$GITHUB_ACTION_PATH/scripts/configure.sh"' "${CASE_DIR}/release/action.yml" || fail 'root action does not invoke its shipped configure script'
 grep -Fq 'bash "$GITHUB_ACTION_PATH/../scripts/teardown.sh"' "${CASE_DIR}/release/teardown/action.yml" || fail 'teardown action does not invoke its shipped teardown script'
+grep -Fq 'bash "$GITHUB_ACTION_PATH/../scripts/scrub-lockfile.sh"' "${CASE_DIR}/release/lockfile-scrub/action.yml" || fail 'lockfile scrub action does not invoke its shipped script'
 
 printf 'release tree tests passed\n'

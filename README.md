@@ -8,6 +8,7 @@ This repository exposes two action entrypoints from the same action-only release
 
 - `/` — configure protected dependency downloads.
 - `/teardown` — remove only SFW-owned configuration before an npm/pnpm/Yarn/Bun publish in the same job.
+- `/lockfile-scrub` — detect or normalize Socket Firewall tarball URLs in a root Bun lockfile.
 
 It does not route package publication or Python, Java, Go, Ruby, Rust, .NET, private-registry, or other dependency ecosystems through the WorkOS SFW instance.
 
@@ -78,6 +79,22 @@ steps:
 The action independently requires a `pull_request` event from a different repository into a public base repository. The input cannot enable fallback for private, same-repository, default-branch, or Dependabot runs.
 
 Do not use this action in an install-bearing `pull_request_target` job. Such workflows can combine base-repository secrets with contributor-controlled checkout, lockfiles, scripts, local/reusable actions, or artifacts. Apply the same review to `workflow_run`, `issue_comment`, `workflow_dispatch`, reusable workflows with inherited secrets, and artifact handoffs whenever they select an untrusted ref or input. Redesign that trust boundary before enabling SFW.
+
+### Bun lockfile cleanup
+
+Bun records an absolute tarball URL when it installs through Socket Firewall. Its native portable representation uses an empty resolved-URL field, so a committed `bun.lock` should not retain `https://socket-firewall.workos.dev/...` URLs.
+
+`/lockfile-scrub` operates only on the caller workspace's root `bun.lock`. It takes no token and never runs package code. `check` is the default: it leaves the file unchanged and exposes `changed=true` when a cleanup is required. `apply` replaces only quoted Socket Firewall tarball URLs with Bun's native empty URL field.
+
+```yaml
+- name: Check Bun lockfile for Socket Firewall URLs
+  id: scrub
+  uses: workos/setup-socket-firewall/lockfile-scrub@<FULL_40_CHARACTER_V1_SHA> # v1
+  with:
+    mode: check
+```
+
+A same-repository pull-request workflow may run `apply`, verify that no SFW URL remains, then commit only `bun.lock` with its scoped `GITHUB_TOKEN`. Keep that Git write in the caller workflow—not in this action—and never use `pull_request_target` or write to an external fork. GitHub does not trigger another Actions run for a `GITHUB_TOKEN` push, so validate the transformed working tree before committing.
 
 ### Package publication
 
