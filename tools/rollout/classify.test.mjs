@@ -831,7 +831,7 @@ test("CLI: partial scan errors are distinct from gaps and terminal output is san
   const unknowns = await runAudit(
     stubClient({
       getText: async () =>
-        workflow("  build:\n    steps:\n      - run: npm run bootstrap\n"),
+        workflow("  build:\n    steps:\n      - run: npm $INSTALL_COMMAND\n"),
     }),
   );
   assert.equal(unknowns.dispositions["needs-review"], 1);

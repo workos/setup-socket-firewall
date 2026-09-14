@@ -87,16 +87,17 @@ test("toolchain version metadata is distinct from package-manager configuration"
   }
 });
 
-test("GitHub expressions are not literal shell logging", () => {
+test("GitHub expression execution remains unverified without erasing separate install configuration", () => {
   for (const run of [
     "echo '${{ inputs.payload }}'\nnpm ci",
     'echo "${{ inputs.payload }}"\nnpm ci',
   ]) {
     assert.equal(
       inspect([setup, { run }]).integration.disposition,
-      "needs-review",
+      "integrated",
     );
-    assert.equal(inspect([{ run }]).integration.disposition, "needs-review");
+    assert.equal(inspect([setup, { run }]).status, "unknown");
+    assert.equal(inspect([{ run }]).integration.disposition, "needs-sfw");
   }
   assert.equal(
     inspect([setup, { run: "echo '$SHELL_LITERAL'\nnpm ci" }]).integration

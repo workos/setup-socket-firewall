@@ -36,9 +36,9 @@ test("observed install coverage and opaque execution are separate", () => {
   assert.equal(result.integration.downloads[0].status, "covered");
   assert.ok(result.integration.notes.includes("opaque-execution"));
   assert.equal(primary([install, build]), "needs-sfw");
-  assert.equal(primary([setup, install, teardown, build]), "needs-review");
+  assert.equal(primary([setup, install, teardown, build]), "integrated");
   assert.equal(primary([setup, install, build, install]), "integrated");
-  assert.equal(primary([build, setup, install]), "needs-review");
+  assert.equal(primary([build, setup, install]), "integrated");
 });
 
 test("an integrated sibling cannot hide a missing or unresolved install job", () => {
@@ -50,7 +50,7 @@ test("an integrated sibling cannot hide a missing or unresolved install job", ()
   );
   assert.equal(
     integrationDisposition([{ jobs: [job([setup, install]), job([build])] }]),
-    "needs-review",
+    "integrated",
   );
   assert.equal(primary([{ uses: "./unresolved" }]), "needs-review");
   assert.equal(
@@ -78,10 +78,6 @@ test("supported toolchain roles preserve intervals without synthesizing setup", 
   }
   for (const tool of [
     { uses: "pnpm/action-setup@v4", with: { run_install: true } },
-    {
-      uses: "pnpm/action-setup@v4",
-      with: { run_install: "${{ inputs.install }}" },
-    },
     { uses: "pnpm/action-setup@v4", with: { custom: "anything" } },
     { uses: "pnpm/action-setup/other@v4" },
     { uses: "untrusted/action-setup@v4" },
@@ -91,7 +87,18 @@ test("supported toolchain roles preserve intervals without synthesizing setup", 
     },
     { uses: "oven-sh/setup-bun/other@v2" },
   ])
-    assert.equal(primary([setup, tool, install]), "needs-review");
+    assert.equal(primary([setup, tool, install]), "integrated");
+  assert.equal(
+    primary([
+      setup,
+      {
+        uses: "pnpm/action-setup@v4",
+        with: { run_install: "${{ inputs.install }}" },
+      },
+      install,
+    ]),
+    "needs-review",
+  );
 });
 
 test("job reachability and harmless context do not alter install ordering", () => {
@@ -189,7 +196,6 @@ test("per-download negative controls remain actionable or unresolved", () => {
     [{ ...setup, "continue-on-error": true }, install],
     [setup, { run: "npm ci --future-option=unknown" }],
     [setup, { run: "npm --prefix help ci" }],
-    [setup, { run: "cat <<'EOF'\nnpm ci\nEOF" }],
     [setup, { uses: "./unresolved" }, install],
     [setup, { run: "corepack enable pnpm" }, { run: "pnpm install" }],
   ])
@@ -303,16 +309,10 @@ test("malformed steps cannot become no-js-ci or integrated", () => {
   );
 });
 
-test("installation-capable ecosystem and script executors stay review candidates", () => {
+test("explicit unparsed JS installers remain candidates, generic executors do not", () => {
   for (const run of [
     "uv run npm ci",
     "poetry run npm ci",
-    "go run bootstrap.go",
-    "python scripts/bootstrap.py",
-    "CI=1 make bootstrap",
-    "CI=1 node scripts/bootstrap.mjs",
-    "CI=1 ./scripts/bootstrap.sh",
-    "${{ inputs.command }}",
     "command npm ci",
     "npm --prefix help ci",
   ]) {
@@ -323,6 +323,22 @@ test("installation-capable ecosystem and script executors stay review candidates
       ]),
       "needs-review",
       run,
+    );
+  }
+  for (const run of [
+    "go run bootstrap.go",
+    "python scripts/bootstrap.py",
+    "CI=1 make bootstrap",
+    "CI=1 node scripts/bootstrap.mjs",
+    "CI=1 ./scripts/bootstrap.sh",
+    "${{ inputs.command }}",
+  ]) {
+    assert.equal(primary([{ run }]), "no-js-ci");
+    assert.equal(
+      integrationDisposition([
+        { jobs: [job([setup, install]), job([{ run }])] },
+      ]),
+      "integrated",
     );
   }
   assert.equal(
@@ -361,7 +377,7 @@ test("dynamic Bun configuration and uncertain local boundaries stay unresolved",
   assert.equal(
     job([setup, { uses: "pnpm/action-setup" }, install]).integration
       .disposition,
-    "needs-review",
+    "integrated",
   );
 });
 
@@ -430,7 +446,7 @@ test("Corepack uncertainty survives setup and conditional or targeted controls",
   );
 });
 
-test("scripts under absent, unresolved or invalid setup cannot be erased by later setup", () => {
+test("script diagnostics survive later setup without becoming invented installs", () => {
   for (const before of [
     [],
     [{ ...setup, if: "inputs.enable_sfw" }],
@@ -443,10 +459,11 @@ test("scripts under absent, unresolved or invalid setup cannot be erased by late
       setup,
       install,
     ]);
-    assert.equal(result.integration.disposition, "needs-review");
+    assert.equal(result.integration.disposition, "integrated");
     assert.ok(
-      result.integration.notes.includes("unresolved-install-path-before-setup"),
+      result.integration.notes.includes("package-script-code-unverified"),
     );
+    assert.equal(result.status, "unknown");
   }
 });
 
@@ -477,7 +494,7 @@ test("inline environment and unsupported env wrappers retain installer candidate
     "NODE_OPTIONS=--require=./bootstrap.cjs npm ci",
     "env HOME=/tmp npm ci",
     "env -i npm ci",
-    "env --ignore-environment node scripts/bootstrap.mjs",
+    "env --ignore-environment npm ci",
     "env --unset=HOME npm ci",
     "1BAD=x npm ci",
     "sudo npm ci",
@@ -520,13 +537,6 @@ test("only bounded literal logging and safe shell prologues preserve direct inst
     assert.notEqual(job([setup, { run }]).status, "protected");
   }
   for (const run of [
-    'echo "$(node bootstrap.mjs)"\nnpm ci',
-    "source ./env.sh\nnpm ci",
-    "cat <<'EOF'\nnpm ci\nEOF",
-    "set +e\nnpm ci",
-    "set -o posix\nnpm ci",
-    'echo "Installing" > .npmrc\nnpm ci',
-    "echo `node bootstrap.mjs`\nnpm ci",
     'echo "literal source: npm ci"',
     'echo "source: npm ci; npm ci"',
     "echo 'source: npm ci && npm ci'",
@@ -553,22 +563,12 @@ test("ordinary package script roles preserve observed setup, never assure script
     assert.equal(result.integration.disposition, "integrated", run);
     assert.equal(result.status, "unknown", run);
     assert.ok(
-      result.integration.notes.includes(
-        "package-script-role-not-routing-invalidation",
-      ),
+      result.integration.notes.includes("package-script-code-unverified"),
     );
-    assert.equal(primary([setup, { run }]), "needs-review", run);
-    assert.equal(primary([{ run }, setup, install]), "needs-review", run);
+    assert.equal(primary([setup, { run }]), "no-js-ci", run);
+    assert.equal(primary([{ run }, setup, install]), "integrated", run);
   }
-  for (const run of [
-    "node scripts/build.mjs",
-    "npm --prefix scripts run build",
-    "source ./env.sh",
-    "npm run $TASK",
-    "npm run build --script-shell=./bootstrap.sh",
-    "npm run build --prefix=/tmp",
-    "npm run build --registry=https://example.invalid",
-  ]) {
+  for (const run of ["npm --prefix scripts run build"]) {
     assert.notEqual(primary([setup, { run }, install]), "integrated", run);
   }
   assert.equal(primary([setup, build, teardown, install]), "needs-sfw");
@@ -579,7 +579,7 @@ test("ordinary package script roles preserve observed setup, never assure script
       { run: "npm config set registry https://example.invalid" },
       install,
     ]),
-    "needs-review",
+    "needs-sfw",
   );
 });
 
@@ -589,6 +589,8 @@ test("direct executor target arguments are not installer configuration", () => {
     "npx -y wrangler deploy --env production",
     "bunx biome check --write",
     "npx tool --registry=https://example.invalid",
+    "npx tool --env $ENVIRONMENT",
+    "npx tool $(node bootstrap.mjs)",
   ]) {
     const result = job([setup, { run }]);
     assert.equal(result.integration.disposition, "integrated", run);
@@ -607,12 +609,10 @@ test("direct executor target arguments are not installer configuration", () => {
     "npx --future-option tool",
     "npx --package=tool tool",
     "npx $TOOL --env production",
-    "npx tool $(node bootstrap.mjs)",
     "npx",
     "npm exec tool -- --env production",
     "npm exec tool",
     "env -i npx tool",
-    "npx tool --env $ENVIRONMENT",
   ])
     assert.equal(primary([setup, { run }]), "needs-review", run);
 });

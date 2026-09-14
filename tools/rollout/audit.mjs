@@ -4,7 +4,11 @@ import { dirname, join } from "node:path";
 import { classifyWorkflow, repositoryDisposition } from "./classify.mjs";
 import { captureRepositoryInventory } from "./inventory.mjs";
 import { ORGANIZATION } from "./constants.mjs";
-import { integrationDisposition } from "./integration.mjs";
+import {
+  integrationDisposition,
+  resolveLocalWorkflowCalls,
+  resolveNoInstallWorkflowCalls,
+} from "./integration.mjs";
 
 const WORKFLOW_PATH_PATTERN = /^\.(?:github|depot)\/workflows\/[^/]+\.ya?ml$/;
 const LOCKFILE_PATTERN =
@@ -207,12 +211,14 @@ export async function auditRepository(client, repository) {
       );
     }
 
-    const workflows = workflowPaths.map((path, index) =>
-      classifyWorkflow(workflowTexts[index], {
-        localActions,
-        path,
-        visibility: repository.visibility,
-      }),
+    const workflows = resolveLocalWorkflowCalls(
+      workflowPaths.map((path, index) =>
+        classifyWorkflow(workflowTexts[index], {
+          localActions,
+          path,
+          visibility: repository.visibility,
+        }),
+      ),
     );
 
     const managers = [
@@ -279,7 +285,9 @@ export async function runAudit(client, options = {}) {
     },
   );
 
-  const rows = sortedByName(repositories);
+  const rows = sortedByName(
+    resolveNoInstallWorkflowCalls(repositories, ORGANIZATION),
+  );
   const dispositions = {};
   const assuranceDispositions = {};
   for (const row of rows) {

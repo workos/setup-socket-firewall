@@ -1,4 +1,5 @@
 import { parseYamlSource as parse } from "./yaml.mjs";
+import { shellCommands, shellTokens } from "./commands.mjs";
 
 import { ACTION_REPOSITORY, APPROVED_RELEASE_SHA } from "./constants.mjs";
 import {
@@ -6,7 +7,7 @@ import {
   defaultsUncertain,
   environmentUncertain,
   observedIntegration,
-  toolchainPreservesRouting,
+  unresolvedJsInvocation,
 } from "./integration.mjs";
 
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/;
@@ -145,26 +146,16 @@ function expectedTokenExpression(visibility) {
   return `\${{secrets.${secret}}}`;
 }
 
-function splitCommands(script) {
-  return String(script)
-    .split(/\r?\n/)
-    .flatMap((line) =>
-      literalLogging(line.trim())
-        ? [line]
-        : line.split(/&&|\|\||;|(?<!\|)\|(?!\|)/),
-    )
-    .map((command) => command.trim())
-    .filter((command) => command.length > 0 && !command.startsWith("#"));
-}
-
 function commandParts(command) {
-  const words = command.split(/\s+/).filter((word) => word.length > 0);
+  const tokens = shellTokens(command);
+  const words = tokens.words;
   const environment = {};
   let start = 0;
-  const assignments = () => {
-    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[start] ?? "")) {
+  const assignments = (envArguments = false) => {
+    const values = envArguments ? words : tokens.commands;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(values[start] ?? "")) {
       // Keep keys for scope checks, never copy values to new diagnostics.
-      Object.defineProperty(environment, words[start].split("=", 1)[0], {
+      Object.defineProperty(environment, values[start].split("=", 1)[0], {
         value: true,
         enumerable: true,
         configurable: true,
@@ -175,9 +166,13 @@ function commandParts(command) {
   assignments();
   if (words[start] === "env" && !words[start + 1]?.startsWith("-")) {
     start += 1;
-    assignments();
+    assignments(true);
   }
-  return { words: words.slice(start), environment };
+  return {
+    words: words.slice(start),
+    rawWords: tokens.commands.slice(start),
+    environment,
+  };
 }
 
 function commandWords(command) {
@@ -194,28 +189,135 @@ function literalLogging(command) {
   );
 }
 
-function safePrologue(command) {
-  return /^set\s+(?:-e|-euo\s+pipefail)$/.test(command);
+const REGISTRY_FLAG =
+  /^--(?:config\.)?(?:(?:@[^:\s=]+:)?(?:reg|regi|regis|regist|registr|registry)|userconfig|globalconfig)(?:=|$)/i;
+const REGISTRY_KEY = /^(?:(?:@[^:]+:)?registry|userconfig|globalconfig)$/i;
+function registrySetter(words) {
+  return (
+    ["npm", "pnpm"].includes(words[0]) &&
+    words[1] === "config" &&
+    ["set", "delete", "unset"].includes(words[2]) &&
+    REGISTRY_KEY.test((words[3] ?? "").split("=", 1)[0])
+  );
+}
+function writeTargets(tokens, includeRemovals = true) {
+  const target = (index) => ({
+    value: tokens.words[index] ?? "",
+    raw: tokens.commands[index] ?? "",
+  });
+  const targets = tokens.commands.flatMap((word, index) =>
+    /^>+$/.test(word) ? [target(index + 1)] : [],
+  );
+  const program = tokens.words[0];
+  if (
+    program === "tee" ||
+    (includeRemovals && ["rm", "unlink", "mv", "truncate"].includes(program)) ||
+    (["sed", "perl"].includes(program) &&
+      tokens.words.some((word) => /^-[^-]*i|^--in-place(?:=|$)/.test(word)))
+  )
+    return [
+      ...targets,
+      ...tokens.words.slice(1).map((_, index) => target(index + 1)),
+    ];
+  if (["cp", "install", "mv"].includes(program) && tokens.words.length > 1)
+    return [...targets, target(tokens.words.length - 1)];
+  return targets;
+}
+function expandedTarget(target) {
+  return target.raw.startsWith('"') && target.raw.endsWith('"')
+    ? target.raw.slice(1, -1)
+    : target.raw;
+}
+function configTarget(target) {
+  if (
+    /(?:^|\/)\.npmrc$/.test(target.value) ||
+    /^\$(?:NPM_CONFIG_USERCONFIG|\{NPM_CONFIG_USERCONFIG(?::\?[^}]*)?\})$/.test(
+      expandedTarget(target),
+    )
+  )
+    return "npm";
+  if (
+    /(?:^|\/)bunfig\.toml$/.test(target.value) ||
+    /^\$(?:SFW_BUN_CONFIG_PATH|\{SFW_BUN_CONFIG_PATH(?::\?[^}]*)?\})$/.test(
+      expandedTarget(target),
+    )
+  )
+    return "bun";
+  return undefined;
 }
 
-const REGISTRY_MUTATION =
-  /--(?:[^\s=]*:)?reg[a-z]*\b|--[^\s=]*(?:registry|userconfig)|(?:NPM|PNPM|BUN)_CONFIG_|npm_config_|\bnpm\s+config\s+(?:set|delete)\b/i;
+function assignmentKeys(words) {
+  return Object.fromEntries(
+    words.flatMap((word) => {
+      const match = word.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:=|<<)/);
+      return match ? [[match[1], true]] : [];
+    }),
+  );
+}
+function changesStepEnvironment(command) {
+  const { words, environment } = commandParts(command);
+  if (!words.length) return environmentUncertain(environment);
+  if (["export", "declare", "typeset", "unset"].includes(words[0])) {
+    const keys =
+      words[0] === "unset"
+        ? Object.fromEntries(words.slice(1).map((key) => [key, true]))
+        : assignmentKeys(words.slice(1));
+    return environmentUncertain(keys);
+  }
+  return false;
+}
+function writesEnvironment(tokens) {
+  const targets = writeTargets(tokens, false).map(expandedTarget);
+  const keys = assignmentKeys(tokens.words);
+  return (
+    targets.some((path) =>
+      /^\$(?:GITHUB_PATH|\{GITHUB_PATH(?::\?[^}]*)?\})$/.test(path),
+    ) ||
+    (targets.some((path) =>
+      /^\$(?:GITHUB_ENV|\{GITHUB_ENV(?::\?[^}]*)?\})$/.test(path),
+    ) &&
+      (!Object.keys(keys).length || environmentUncertain(keys)))
+  );
+}
+
+function approvedBunArguments(words, rawWords) {
+  const indexes = new Set();
+  if (words[0] !== "bun") return indexes;
+  const approvedPath = (value) =>
+    /^\$(?:SFW_BUN_CONFIG_PATH|\{SFW_BUN_CONFIG_PATH(?::\?)?\})$/.test(
+      value?.startsWith('"') && value.endsWith('"')
+        ? value.slice(1, -1)
+        : (value ?? ""),
+    );
+  rawWords.forEach((word, index) => {
+    if (word.startsWith("--config=") && approvedPath(word.slice(9)))
+      indexes.add(index);
+    if (word === "--config" && approvedPath(rawWords[index + 1])) {
+      indexes.add(index);
+      indexes.add(index + 1);
+    }
+  });
+  return indexes;
+}
 
 function directExecutor(words) {
   if (!["npx", "bunx"].includes(words[0])) return undefined;
   let target = 1;
   while (["-y", "--yes"].includes(words[target])) target += 1;
-  // Only literal package/binary targets and literal arguments; no npm-exec
-  // grammar, shell interpretation or unsupported installer options.
+  // Installer options end at the literal package/binary target. Arguments to
+  // that program are payload, not npx/bunx registry configuration.
   if (!/^[A-Za-z0-9_@][A-Za-z0-9_@./:+-]*$/.test(words[target] ?? ""))
     return undefined;
-  if (
-    words
-      .slice(target + 1)
-      .some((word) => !/^[A-Za-z0-9_@./:=,+%-]+$/.test(word))
-  )
-    return undefined;
   return words.slice(0, target).join(" ");
+}
+
+function installerArguments(words) {
+  const prefix = directExecutor(words);
+  const args = (prefix === undefined ? words : shellTokens(prefix).words).slice(
+    1,
+  );
+  const end = args.indexOf("--");
+  return end === -1 ? args : args.slice(0, end);
 }
 
 function firstSubcommand(words) {
@@ -231,6 +333,19 @@ export function classifyCommand(command) {
   if (program.includes("/"))
     return { command, program, kind: "unknown-wrapper" };
   const name = program;
+  if (
+    ["npm", "pnpm", "bun", "yarn", "npx", "bunx", "corepack"].includes(name) &&
+    words.length === 2 &&
+    ["--version", "-v", "--help", "-h"].includes(words[1])
+  )
+    return { command, kind: "no-network" };
+
+  if (
+    ["npm", "pnpm"].includes(name) &&
+    words[1] === "config" &&
+    ["get", "list", "ls"].includes(words[2])
+  )
+    return { command, kind: "no-network" };
 
   // Do not mistake an option's value (e.g. --prefix help) for the verb.
   // Unsupported leading options remain review candidates, not a parsed shell.
@@ -364,6 +479,35 @@ function parseUses(uses) {
   };
 }
 
+// Bind only whole-value composite input references; never evaluate expressions
+// or interpolate shell text. This preserves caller token names through helpers.
+function bindInputs(value, inputs) {
+  if (typeof value !== "string") return value;
+  const match = value.match(/^\$\{\{\s*inputs\.([\w-]+)\s*\}\}$/);
+  return match
+    ? Object.hasOwn(inputs, match[1])
+      ? inputs[match[1]]
+      : ""
+    : value;
+}
+
+function bindStepInputs(step, inputs) {
+  if (!isMapping(step)) return step;
+  return Object.fromEntries(
+    Object.entries(step).map(([key, value]) => [
+      key,
+      ["with", "env"].includes(key) && isMapping(value)
+        ? Object.fromEntries(
+            Object.entries(value).map(([name, item]) => [
+              name,
+              bindInputs(item, inputs),
+            ]),
+          )
+        : value,
+    ]),
+  );
+}
+
 function classifyUsesStep(step, context) {
   const uses = parseUses(step.uses);
   const withInput = step.with ?? {};
@@ -427,8 +571,17 @@ function classifyUsesStep(step, context) {
     ) {
       return [{ kind: "unknown-local-action", uses: step.uses }];
     }
+    const inputs = {
+      ...Object.fromEntries(
+        Object.entries(action.inputs ?? {}).map(([key, input]) => [
+          key,
+          input?.default ?? "",
+        ]),
+      ),
+      ...withInput,
+    };
     return steps.flatMap((inner) =>
-      classifyStep(inner, {
+      classifyStep(bindStepInputs(inner, inputs), {
         ...context,
         actionStack: [...stack, uses.path],
       }).map((operation) => ({
@@ -472,6 +625,7 @@ function classifyUsesStep(step, context) {
       {
         kind: "setup-node",
         registryMutating: withInput["registry-url"] !== undefined,
+        registryPersisting: withInput["registry-url"] !== undefined,
         uses: step.uses,
       },
     ];
@@ -500,6 +654,9 @@ function classifyUsesStep(step, context) {
           manager: "pnpm",
           uses: step.uses,
           uncertain: true,
+          integrationConfigurationUncertain: ![true, "true"].includes(
+            runInstall,
+          ),
         },
       ];
     }
@@ -507,7 +664,6 @@ function classifyUsesStep(step, context) {
       {
         kind: "unknown",
         uses: step.uses,
-        integrationToolchain: toolchainPreservesRouting(uses, withInput),
       },
     ];
   }
@@ -515,7 +671,6 @@ function classifyUsesStep(step, context) {
     {
       kind: "unknown",
       uses: step.uses,
-      integrationToolchain: toolchainPreservesRouting(uses, withInput),
     },
   ];
 }
@@ -544,6 +699,7 @@ export function classifyStep(step, context = {}) {
   let integrationUncertain =
     boundaryUncertain({ ...step, env: undefined, if: primaryRunGuard(step) }) ||
     environmentUncertain(step.env);
+  const configurationBoundaryUncertain = integrationUncertain;
   if (
     step.uses !== undefined &&
     step.run === undefined &&
@@ -560,38 +716,90 @@ export function classifyStep(step, context = {}) {
       ) ||
       (step.shell !== undefined && !["bash", "sh"].includes(step.shell));
     uncertain ||= complexShell(step.run);
-    integrationUncertain ||= complexShell(
-      step.run
-        .split(/\r?\n/)
-        .filter((line) => !literalLogging(line.trim()))
-        .join("\n"),
-    );
-    operations = splitCommands(step.run).map((command) => {
+    const shell = shellCommands(step.run);
+    integrationUncertain ||=
+      shell.ambiguous ||
+      (step.shell !== undefined && !["bash", "sh"].includes(step.shell));
+    const conditionalControl =
+      shell.conditional ||
+      shell.commands.some((command) =>
+        /^(?:if|case|for|while|until|select)\b/.test(command),
+      );
+    operations = shell.commands.map((command) => {
       const operation = classifyCommand(command);
-      const { words, environment } = commandParts(command);
+      const { words, rawWords, environment } = commandParts(command);
+      const bunArguments = approvedBunArguments(words, rawWords);
+      const tokens = shellTokens(command);
+      const nestedCommands = tokens.substitutions.flatMap(
+        (body) => shellCommands(body).commands,
+      );
+      const nested = nestedCommands.map((body) => commandParts(body).words);
+      const nestedEnvironment = nestedCommands.some(
+        (body, index) =>
+          environmentUncertain(commandParts(body).environment) ||
+          (classifyCommand(body).kind === "unknown-wrapper" &&
+            !classifyCommand(body).manager &&
+            unresolvedJsInvocation(classifyCommand(body))) ||
+          changesStepEnvironment(body) ||
+          (/^(?:env|sudo|command|time|exec)$/.test(nested[index][0] ?? "") &&
+            unresolvedJsInvocation(classifyCommand(body))),
+      );
       const executorPrefix = directExecutor(words);
       // npm's exact 'always' mode rewrites lockfile hosts to the configured
       // registry; it does not select another registry. Other modes need review.
       const replacementFlags = words.filter((word) =>
         word.startsWith("--replace-registry-host"),
       );
-      const configurationWords = command
-        .split(/\s+/)
-        .filter((word) => !word.startsWith("--replace-registry-host"));
+      const configurationWords = installerArguments(words).filter(
+        (word) => !word.startsWith("--replace-registry-host"),
+      );
       const supportedReplacement =
         words[0] === "npm" &&
         replacementFlags.every(
           (word) => word === "--replace-registry-host=always",
         );
+      const targets = [
+        ...writeTargets(tokens),
+        ...nestedCommands.flatMap((body) => writeTargets(shellTokens(body))),
+      ];
+      const configKinds = targets.map(configTarget);
+      const configFileWrite = configKinds.some(Boolean);
+      const bunFileOnly = configFileWrite && !configKinds.includes("npm");
+      const knownRegistryContent =
+        ["echo", "printf"].includes(words[0]) &&
+        tokens.words.some((word) =>
+          /(?:^|\n)(?:@[^:]+:)?registry\s*=/.test(word),
+        );
+      const setter = registrySetter(words) || nested.some(registrySetter);
+      const dynamicSetter = [words, ...nested].some(
+        (args) =>
+          ["npm", "pnpm"].includes(args[0]) &&
+          args[1] === "config" &&
+          ["set", "delete", "unset"].includes(args[2]) &&
+          /[$`]/.test(args.slice(3).join(" ")),
+      );
+      const nestedOverride = nested.some(
+        (args) =>
+          ["npm", "pnpm", "bun", "yarn", "npx", "bunx"].includes(args[0]) &&
+          installerArguments(args).some((word) => REGISTRY_FLAG.test(word)),
+      );
       const registryMutating =
-        !literalLogging(command) &&
-        REGISTRY_MUTATION.test(configurationWords.join(" "));
+        setter ||
+        dynamicSetter ||
+        configFileWrite ||
+        nestedOverride ||
+        (["npm", "pnpm", "bun", "yarn", "npx", "bunx"].includes(words[0]) &&
+          configurationWords.some((word) => REGISTRY_FLAG.test(word))) ||
+        Object.keys(environment).some((key) =>
+          /^(?:npm|pnpm|bun)_CONFIG_/i.test(key),
+        );
       const unsupportedFlags =
         operation.kind === "js-public-download" &&
         operation.corepack === undefined &&
         words
           .filter(
-            (word) =>
+            (word, index) =>
+              !bunArguments.has(index) &&
               !(
                 supportedReplacement &&
                 word === "--replace-registry-host=always"
@@ -601,8 +809,12 @@ export function classifyStep(step, context = {}) {
             (word) =>
               word.startsWith("-") && !TRANSPARENT_INSTALL_FLAGS.has(word),
           );
-      if (registryMutating) operation.registryMutating = true;
-      else if (
+      if (registryMutating) {
+        operation.registryMutating = true;
+        operation.registryPersisting =
+          setter || dynamicSetter || configFileWrite;
+        if (bunFileOnly) operation.registryManager = "bun";
+      } else if (
         unsupportedFlags ||
         (replacementFlags.length > 0 && !supportedReplacement)
       )
@@ -613,7 +825,14 @@ export function classifyStep(step, context = {}) {
         environmentUncertain(environment) ||
         (replacementFlags.length > 0 && !supportedReplacement) ||
         (words[0] === "npm" && ["exec", "x"].includes(words[1])) ||
-        (unsupportedFlags && !registryMutating);
+        (unsupportedFlags && !registryMutating) ||
+        (operation.kind === "js-public-download" &&
+          /[$`]/.test(
+            words.filter((_, index) => !bunArguments.has(index)).join(" "),
+          )) ||
+        (configFileWrite && !knownRegistryContent) ||
+        nestedOverride ||
+        dynamicSetter;
       if (["npx", "bunx"].includes(words[0])) {
         // Strict assurance still sees unknown executor code/configuration flags.
         operation.uncertain = true;
@@ -621,34 +840,105 @@ export function classifyStep(step, context = {}) {
         operation.integrationUncertain =
           environmentUncertain(environment) ||
           (executorPrefix === undefined && !registryMutating);
-        if (executorPrefix !== undefined)
-          operation.registryMutating = REGISTRY_MUTATION.test(executorPrefix);
+        operation.integrationUncertain ||= nestedOverride;
+        // Persistence comes from executable setters/writes, not payload text.
       }
+      if (setter && nested.some(registrySetter))
+        operation.integrationUncertain = true;
       // Reachability is not a certain state transition: a skipped disable
       // cannot clear a persistent Corepack shim established by an earlier step.
       if (
         operation.corepackControl ||
         ["enable", "disable"].includes(operation.corepack)
       )
-        operation.integrationUncertain ||= condition(step.if) === "uncertain";
-      operation.integrationTransparent =
-        safePrologue(command) || literalLogging(command);
-      operation.integrationScript =
-        ["npm", "pnpm", "bun", "yarn"].includes(words[0]) &&
-        ((words[1] === "run" && /^[A-Za-z0-9_:.+-]+$/.test(words[2] ?? "")) ||
-          ["test", "start", "stop", "restart"].includes(words[1])) &&
-        words
-          .slice(2)
-          .every(
-            (word, index) =>
-              /^[A-Za-z0-9_@./:=,+%-]+$/.test(word) &&
-              (!word.startsWith("-") ||
-                word === "--" ||
-                words.slice(2, index + 2).includes("--")),
-          ) &&
-        !registryMutating;
+        operation.integrationUncertain ||=
+          condition(step.if) === "uncertain" || conditionalControl;
+      if (
+        operation.registryMutating &&
+        (conditionalControl || condition(step.if) === "uncertain")
+      )
+        operation.integrationUncertain = true;
+      operation.commandGroup = context.stepBudget?.remaining;
+      operation.stepEnvironmentUncertain = changesStepEnvironment(command);
+      operation.environmentPersisting =
+        writesEnvironment(tokens) ||
+        nestedCommands.some((body) => writesEnvironment(shellTokens(body)));
+      const nestedCandidates = nestedCommands.map(classifyCommand);
+      const nestedInvocations = nestedCandidates.filter((candidate, index) => {
+        const args = nested[index];
+        const configRead =
+          args[1] === "config" && ["get", "list", "ls"].includes(args[2]);
+        return (
+          candidate.kind === "js-public-download" ||
+          candidate.kind === "yarn-blocked" ||
+          (unresolvedJsInvocation(candidate) &&
+            !configRead &&
+            !registrySetter(args) &&
+            !scriptInvocation(args, candidate.kind))
+        );
+      });
+      operation.explicitJsInvocation =
+        nestedOverride || nestedInvocations.length > 0;
+      const directInvocation =
+        !scriptInvocation(words, operation.kind) &&
+        unresolvedJsInvocation({ ...operation, explicitJsInvocation: false });
+      const identifiedInvocations = directInvocation
+        ? [...nestedInvocations, operation]
+        : nestedInvocations;
+      operation.integrationManagers = [
+        ...new Set(
+          identifiedInvocations
+            .map((candidate) => {
+              const manager =
+                candidate.manager ??
+                shellTokens(candidate.command).words.find((word) =>
+                  ["npm", "pnpm", "bun", "yarn", "npx", "bunx"].includes(word),
+                );
+              return manager === "npx"
+                ? "npm"
+                : manager === "bunx"
+                  ? "bun"
+                  : manager;
+            })
+            .filter(Boolean),
+        ),
+      ];
+      operation.integrationCorepackDownload = nestedInvocations.some(
+        (candidate) => candidate.corepack,
+      );
+      operation.integrationCorepackUncertain = nestedCandidates.some(
+        (candidate) =>
+          candidate.corepackControl ||
+          ["enable", "disable"].includes(candidate.corepack),
+      );
+      operation.integrationConfigurationUncertain =
+        operation.integrationUncertain ||
+        (operation.explicitJsInvocation && nestedEnvironment) ||
+        (directInvocation && !operation.manager) ||
+        (step.shell !== undefined && !["bash", "sh"].includes(step.shell)) ||
+        (operation.kind === "unknown-wrapper" &&
+          operation.manager !== undefined &&
+          (words[1]?.startsWith("-") || /[$`]/.test(words[1] ?? ""))) ||
+        /^(?![A-Za-z_][A-Za-z0-9_]*=)[^\s=]+=/.test(command) ||
+        /^(?:\.?\.?\/|\/)[^\s]*\/(?:npm|pnpm|npx|bun|bunx|yarn|corepack)\b/.test(
+          command,
+        ) ||
+        (/^(?:env|sudo|command|time|exec)$/.test(words[0] ?? "") &&
+          /(?:^|\s)(?:npm|pnpm|npx|bun|bunx|yarn|corepack)\b/.test(command)) ||
+        (operation.registryMutating && shell.ambiguous);
+      operation.integrationSyntaxUncertain = shell.ambiguous;
+      operation.integrationLiteral = literalLogging(command);
+      // Script bodies are unverified code, not presumed dependency installs.
+      // pnpm/Yarn support script-name shorthands; their configuration/toolchain
+      // commands are not shorthands. Explicit nested JS commands stay reviewable.
+      operation.integrationScript = scriptInvocation(words, operation.kind);
       return operation;
     });
+    if (shell.limit || shell.lexError)
+      operations.push({
+        kind: "unknown",
+        sourceError: "unresolved-shell-source",
+      });
   } else {
     operations = [{ kind: "unknown" }];
   }
@@ -658,7 +948,32 @@ export function classifyStep(step, context = {}) {
     integrationUncertain:
       integrationUncertain ||
       (operation.integrationUncertain ?? operation.uncertain ?? false),
+    integrationConfigurationUncertain:
+      configurationBoundaryUncertain ||
+      (operation.integrationConfigurationUncertain ??
+        operation.integrationUncertain ??
+        operation.uncertain ??
+        false),
   }));
+}
+
+function scriptInvocation(words, kind) {
+  return (
+    kind === "unknown-wrapper" &&
+    ["npm", "pnpm", "bun", "yarn"].includes(words[0]) &&
+    (/^(?:run|test|start|stop|restart)$/.test(words[1] ?? "") ||
+      (words[0] === "bun" && words[1] === "build") ||
+      (["pnpm", "yarn"].includes(words[0]) &&
+        /^[A-Za-z0-9_:.+-]+$/.test(words[1] ?? "") &&
+        !/^(?:config|env|setup|set|create|self-update|plugin|policies|patch|patch-commit)$/.test(
+          words[1],
+        ) &&
+        !words
+          .slice(2)
+          .some((word) =>
+            /^(?:npm|pnpm|npx|bun|bunx|yarn|corepack)$/.test(word),
+          )))
+  );
 }
 
 function normalizeTriggers(workflow) {
@@ -862,7 +1177,15 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
     return {
       job: jobName,
       managers: [],
-      operations: [{ kind: "reusable-call", uses: String(job.uses) }],
+      operations:
+        typeof job.uses === "string" &&
+        job.steps === undefined &&
+        (job.with === undefined || isMapping(job.with)) &&
+        (job.secrets === undefined ||
+          job.secrets === "inherit" ||
+          isMapping(job.secrets))
+          ? [{ kind: "reusable-call", uses: job.uses }]
+          : [{ kind: "unknown", sourceError: "malformed-reusable-call" }],
       status: "reusable-call",
       violations,
       integration: {
