@@ -98,7 +98,9 @@ done
 
 [[ -x "${CASE_DIR}/release/scripts/configure.sh" ]] || fail 'configure.sh lost executable mode'
 [[ -x "${CASE_DIR}/release/scripts/teardown.sh" ]] || fail 'teardown.sh lost executable mode'
-[[ -x "${CASE_DIR}/release/scripts/scrub-lockfile.sh" ]] || fail 'scrub-lockfile.sh lost executable mode'
+# The GraphQL publisher creates new files as 100644. This helper is invoked via
+# bash (including the packaged controller below), so it needs no executable bit.
+[[ ! -x "${CASE_DIR}/release/scripts/scrub-lockfile.sh" ]] || fail 'scrub-lockfile.sh must be non-executable for signed publication'
 
 grep -Fq 'bash "$GITHUB_ACTION_PATH/scripts/configure.sh"' "${CASE_DIR}/release/action.yml" || fail 'root action does not invoke its shipped configure script'
 grep -Fq 'bash "$GITHUB_ACTION_PATH/../scripts/teardown.sh"' "${CASE_DIR}/release/teardown/action.yml" || fail 'teardown action does not invoke its shipped teardown script'
