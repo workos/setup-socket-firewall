@@ -4,10 +4,11 @@
 
 Composite GitHub Actions for routing **public npm-compatible JavaScript/TypeScript dependency downloads** through the WorkOS Socket Firewall and restoring public-registry access before package publication.
 
-This repository exposes two action entrypoints from the same action-only release commit:
+This repository exposes three action entrypoints from the same action-only release commit:
 
 - `/` — configure protected dependency downloads.
 - `/teardown` — remove only SFW-owned configuration before an npm/pnpm/Yarn/Bun publish in the same job.
+- `/lockfile-scrub` — normalize a Bun or npm lockfile and commit the repair directly to its pull request branch.
 
 It does not route package publication or Python, Java, Go, Ruby, Rust, .NET, private-registry, or other dependency ecosystems through the WorkOS SFW instance.
 
@@ -78,6 +79,52 @@ steps:
 The action independently requires a `pull_request` event from a different repository into a public base repository. The input cannot enable fallback for private, same-repository, default-branch, or Dependabot runs.
 
 Do not use this action in an install-bearing `pull_request_target` job. Such workflows can combine base-repository secrets with contributor-controlled checkout, lockfiles, scripts, local/reusable actions, or artifacts. Apply the same review to `workflow_run`, `issue_comment`, `workflow_dispatch`, reusable workflows with inherited secrets, and artifact handoffs whenever they select an untrusted ref or input. Redesign that trust boundary before enabling SFW.
+
+### Bun and npm lockfile cleanup
+
+Registry URLs saved in lockfiles can bind future installations to Socket Firewall even when the installer has no access to it. `/lockfile-scrub` provides an optional backstop for Bun and npm; npm's `omit-lockfile-registry-resolved=true` remains the preferred preventive configuration.
+
+| Selected filename | Cleanup |
+| --- | --- |
+| `bun.lock` (default) | Replace quoted Socket Firewall tarball URLs with Bun's native empty resolved-URL field (`""`). |
+| `package-lock.json` | Replace the exact `https://socket-firewall.workos.dev/` prefix in JSON `resolved` string values with `https://registry.npmjs.org/`. |
+| `npm-shrinkwrap.json` | Same npm transform; lockfile versions 1, 2, and 3 are supported for both npm filenames. |
+
+The npm transform preserves tarball paths, query strings, fragments, versions, integrity hashes, formatting, and unrelated values. It does not remove npm `resolved` fields or blank their URLs. Malformed or unsupported-version npm JSON fails without changing the selected file.
+
+**The default `mode: fix` repairs the PR branch itself.** The action reads the selected lockfile from the event's committed PR head, normalizes it in an isolated temporary directory, and creates a commit containing only that file on the same PR branch. `token` defaults to `${{ github.token }}`; the job needs `contents: write`. No checkout, package installation, Socket Firewall secret, Git configuration, or separate commit/push step is needed. The action uses GitHub's atomic `createCommitOnBranch` API rather than a local Git push.
+
+```yaml
+name: Repair lockfile registry URLs
+on:
+  pull_request:
+    paths: [bun.lock]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: workos/setup-socket-firewall/lockfile-scrub@<FULL_40_CHARACTER_V1_SHA> # v1
+```
+
+For npm, set `with: { lockfile: package-lock.json }` and change the workflow path filter to match. `npm-shrinkwrap.json` and nested paths such as `apps/site/package-lock.json` are also supported. The path is relative to the repository at the PR head, **not** a local checkout; uncommitted local changes are ignored. Only one selected lockfile is processed. Yarn, pnpm, binary `bun.lockb`, symlinks, submodules, executable lockfiles, missing files, and paths outside the repository are rejected.
+
+The outputs are `changed` (whether the file needed repair) and `commit-sha` (the repair commit, empty for no-op/check mode). A clean file creates no commit. `mode: check` explicitly opts into read-only detection: it reports `changed=true` without committing or failing merely because repair is needed. Malformed npm JSON and unrecognized Bun SFW URLs fail without making a branch change.
+
+Branch safety is enforced **inside the action**, not left to caller shell guards:
+
+- Only ordinary `pull_request` events are accepted; `pull_request_target`, push, dispatch, and other triggers are refused.
+- Same-repository PR branches can be repaired. Clean external forks pass; dirty forks fail with repair guidance and never receive a write.
+- The repository's default branch is never modified. Closed PRs or an event whose PR head has changed are rejected.
+- The commit API compares the expected head SHA atomically, refusing concurrent updates. It does not force-push, overwrite newer commits, run Git hooks, or retry denied/ambiguous writes.
+
+Use this action in a dedicated job on an ephemeral Linux runner supporting Node 24 JavaScript actions, with Bash/coreutils available. GitHub supplies the Node runtime. It never executes target-repository code. The token is used only for GitHub API requests and is not passed to the normalization subprocess.
+
+Do not rely on `GITHUB_TOKEN` commits to run follow-up CI automatically: GitHub can suppress those workflows or hold them for approval. The live branch-repair trial created `action_required` follow-up runs with no jobs executed. Normalizing a lockfile does not establish that all application CI checks pass on the new commit. Repositories requiring fresh-head checks need a separately reviewed solution. Branch protection and token-policy denials fail the action; it does not bypass those controls. If several selected locks need repair, each commit advances the head, so use a subsequent PR event for the next repair rather than parallel writers using the same event SHA.
 
 ### Package publication
 

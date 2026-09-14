@@ -17,6 +17,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
       - name: Check shell style and test coverage policy
         run: |
           set -euo pipefail
@@ -29,11 +32,91 @@ jobs:
       - name: Run shell tests
         run: |
           set -euo pipefail
-          bash -n scripts/*.sh
+          for source in scripts/*.sh; do bash -n "$source"; done
           bash scripts/configure.test.sh
           bash scripts/teardown.test.sh
+          bash scripts/scrub-lockfile.test.sh
+          node --test scripts/scrub-npm-lockfile.test.mjs scripts/fix-lockfile.test.mjs
           bash scripts/build-release.test.sh
           bash scripts/publish-release.test.sh
+
+  scrub-npm-smoke:
+    name: Npm scrub (${{ matrix.lockfile }}, v${{ matrix.version }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        lockfile: [package-lock.json, npm-shrinkwrap.json]
+        version: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Prepare tainted npm fixture
+        env:
+          LOCKFILE: ${{ matrix.lockfile }}
+          VERSION: ${{ matrix.version }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
+          const fixture = JSON.parse(readFileSync('.github/fixtures/npm/package-lock.json', 'utf8'));
+          const dependency = fixture.packages['node_modules/left-pad'];
+          dependency.resolved = dependency.resolved.replace('registry.yarnpkg.com', 'socket-firewall.workos.dev');
+          fixture.lockfileVersion = Number(process.env.VERSION);
+          if (fixture.lockfileVersion < 3) fixture.dependencies = { 'left-pad': { ...dependency } };
+          if (fixture.lockfileVersion === 1) delete fixture.packages;
+          mkdirSync('scrub-smoke');
+          copyFileSync('.github/fixtures/npm/package.json', 'scrub-smoke/package.json');
+          const text = JSON.stringify(fixture, null, 2) + '\n';
+          writeFileSync(`scrub-smoke/${process.env.LOCKFILE}`, text);
+          writeFileSync('scrub-smoke/before', text);
+          writeFileSync('scrub-smoke/expected', text.replaceAll('socket-firewall.workos.dev', 'registry.npmjs.org'));
+          JS
+      - name: Check normalization helper
+        id: check
+        env:
+          SFW_SCRUB_LOCKFILE: scrub-smoke/${{ matrix.lockfile }}
+          SFW_SCRUB_MODE: check
+        run: bash scripts/scrub-lockfile.sh
+      - name: Check mode preserves bytes
+        env:
+          CHANGED: ${{ steps.check.outputs.changed }}
+          LOCKFILE: ${{ matrix.lockfile }}
+        run: |
+          test "$CHANGED" = true
+          cmp scrub-smoke/before "scrub-smoke/$LOCKFILE"
+      - name: Apply normalization helper
+        id: apply
+        env:
+          SFW_SCRUB_LOCKFILE: scrub-smoke/${{ matrix.lockfile }}
+          SFW_SCRUB_MODE: apply
+        run: bash scripts/scrub-lockfile.sh
+      - name: Install from normalized lockfile without credentials
+        working-directory: scrub-smoke
+        env:
+          CHANGED: ${{ steps.apply.outputs.changed }}
+          LOCKFILE: ${{ matrix.lockfile }}
+        run: |
+          set -euo pipefail
+          test "$CHANGED" = true
+          cmp expected "$LOCKFILE"
+          npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ --cache="$RUNNER_TEMP/scrub-npm-cache"
+          node -e "require('left-pad')"
+          cmp expected "$LOCKFILE"
+      - name: Recheck normalization helper
+        id: recheck
+        env:
+          SFW_SCRUB_LOCKFILE: scrub-smoke/${{ matrix.lockfile }}
+          SFW_SCRUB_MODE: check
+        run: bash scripts/scrub-lockfile.sh
+      - name: Assert idempotence
+        env:
+          CHANGED: ${{ steps.recheck.outputs.changed }}
+        run: test "$CHANGED" = false
 
   check-secret:
     name: Check public secret availability
@@ -204,6 +287,21 @@ jobs:
           JSON
           npm ci --ignore-scripts --no-audit --no-fund
           node -e "require('left-pad'); console.log('non-npmjs lockfile host rewritten through SFW')"
+
+      - name: Install a scrubbed npm lockfile through Socket Firewall
+        if: matrix.manager == 'npm' && steps.sfw.outputs.active == 'true'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/scrub-npm-protected"
+          mkdir "$work"
+          cp .github/fixtures/npm/package.json "$work/"
+          sed 's#https://registry.yarnpkg.com/#https://socket-firewall.workos.dev/#g' .github/fixtures/npm/package-lock.json > "$work/package-lock.json"
+          GITHUB_WORKSPACE="$work" SFW_SCRUB_LOCKFILE=package-lock.json SFW_SCRUB_MODE=apply bash scripts/scrub-lockfile.sh
+          cp "$work/package-lock.json" "$work/expected"
+          cd "$work"
+          npm ci --ignore-scripts --no-audit --no-fund --cache="$RUNNER_TEMP/scrub-protected-cache"
+          node -e "require('left-pad')"
+          cmp expected package-lock.json
 
       - name: Restore public registry before publication
         id: teardown
