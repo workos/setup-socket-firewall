@@ -1,0 +1,31 @@
+name: Fix Socket Firewall lockfile URLs
+description: >-
+  Normalize a Bun or npm lockfile and commit the repair directly to the
+  same-repository pull request branch using GITHUB_TOKEN.
+inputs:
+  lockfile:
+    description: >-
+      Repository-relative path to bun.lock, package-lock.json, or npm-shrinkwrap.json.
+      Reads committed PR-head content; no checkout is required. Symlinks are rejected.
+    required: false
+    default: bun.lock
+  mode:
+    description: >-
+      fix (default) commits a needed repair to the PR branch; check reports whether
+      repair is needed without committing. Requires a pull_request event.
+    required: false
+    default: fix
+  token:
+    description: >-
+      Repository GITHUB_TOKEN. Automatic repair requires contents:write.
+      Never writes to a fork or the repository default branch.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  changed:
+    description: Whether the selected lockfile needed repair.
+  commit-sha:
+    description: The repair commit SHA, or empty if no commit was created.
+runs:
+  using: node24
+  main: ../scripts/fix-lockfile.mjs
