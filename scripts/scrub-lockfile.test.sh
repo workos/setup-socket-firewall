@@ -152,10 +152,11 @@ test_unrecognized_bun_url_fails_without_mutation() {
 }
 
 test_action_wires_changed_output_and_script() {
-  assert_contains "$ACTION" 'value: ${{ steps.scrub.outputs.changed }}'
-  assert_contains "$ACTION" 'run: bash "$GITHUB_ACTION_PATH/../scripts/scrub-lockfile.sh"'
+  assert_contains "$ACTION" 'main: ../scripts/fix-lockfile.mjs'
+  assert_contains "$ACTION" 'using: node24'
   assert_contains "$ACTION" 'default: bun.lock'
-  assert_contains "$ACTION" 'SFW_SCRUB_LOCKFILE: ${{ inputs.lockfile }}'
+  assert_contains "$ACTION" 'default: fix'
+  assert_contains "$ACTION" 'default: ${{ github.token }}'
 }
 
 test_clean_lockfile_reports_unchanged

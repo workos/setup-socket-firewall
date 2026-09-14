@@ -24,7 +24,7 @@ prepare_source_copy() {
   cp "$ROOT/LICENSE" "$ROOT/action.yml" "$ROOT/release-manifest.txt" "$destination/"
   cp "$ROOT/teardown/action.yml" "$destination/teardown/"
   cp "$ROOT/lockfile-scrub/action.yml" "$destination/lockfile-scrub/"
-  cp "$ROOT/scripts/build-release.sh" "$ROOT/scripts/configure.sh" "$ROOT/scripts/teardown.sh" "$ROOT/scripts/scrub-lockfile.sh" "$ROOT/scripts/scrub-npm-lockfile.mjs" "$destination/scripts/"
+  cp "$ROOT/scripts/build-release.sh" "$ROOT/scripts/configure.sh" "$ROOT/scripts/teardown.sh" "$ROOT/scripts/scrub-lockfile.sh" "$ROOT/scripts/scrub-npm-lockfile.mjs" "$ROOT/scripts/fix-lockfile.mjs" "$destination/scripts/"
 }
 
 "${ROOT}/scripts/build-release.sh" "${CASE_DIR}/release" >/dev/null
@@ -92,7 +92,7 @@ grep -Ev '^[[:space:]]*(#|$)' "${ROOT}/release-manifest.txt" | LC_ALL=C sort >"$
 ) >"$actual"
 diff -u "$expected" "$actual"
 
-for forbidden in README.md package.json package-lock.json reports tools .github scripts/configure.test.sh scripts/teardown.test.sh scripts/scrub-lockfile.test.sh scripts/scrub-npm-lockfile.test.mjs scripts/build-release.sh scripts/build-release.test.sh scripts/publish-release.sh scripts/publish-release.test.sh; do
+for forbidden in README.md package.json package-lock.json reports tools .github scripts/configure.test.sh scripts/teardown.test.sh scripts/scrub-lockfile.test.sh scripts/scrub-npm-lockfile.test.mjs scripts/fix-lockfile.test.mjs scripts/build-release.sh scripts/build-release.test.sh scripts/publish-release.sh scripts/publish-release.test.sh; do
   [[ ! -e "${CASE_DIR}/release/${forbidden}" ]] || fail "forbidden release path present: ${forbidden}"
 done
 
@@ -102,7 +102,8 @@ done
 
 grep -Fq 'bash "$GITHUB_ACTION_PATH/scripts/configure.sh"' "${CASE_DIR}/release/action.yml" || fail 'root action does not invoke its shipped configure script'
 grep -Fq 'bash "$GITHUB_ACTION_PATH/../scripts/teardown.sh"' "${CASE_DIR}/release/teardown/action.yml" || fail 'teardown action does not invoke its shipped teardown script'
-grep -Fq 'bash "$GITHUB_ACTION_PATH/../scripts/scrub-lockfile.sh"' "${CASE_DIR}/release/lockfile-scrub/action.yml" || fail 'lockfile scrub action does not invoke its shipped script'
+grep -Fq 'main: ../scripts/fix-lockfile.mjs' "${CASE_DIR}/release/lockfile-scrub/action.yml" || fail 'lockfile action does not invoke its shipped branch fixer'
+SFW_TEST_FIX_MODULE="${CASE_DIR}/release/scripts/fix-lockfile.mjs" node --test "${ROOT}/scripts/fix-lockfile.test.mjs" >/dev/null
 
 # Run the shipped wrapper from the isolated release tree, not the source tree.
 mkdir "${CASE_DIR}/npm-workspace"

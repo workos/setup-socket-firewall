@@ -1,0 +1,41 @@
+name: Verify lockfile branch repair (temporary)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/verify-lockfile-repair.yml
+      - .github/fixtures/lockfile-repair/bun.lock
+      - lockfile-scrub/action.yml
+      - scripts/fix-lockfile.mjs
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    if: github.event.pull_request.number == 10 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # Only needed to exercise the unreleased local action. Released consumers
+      # call the pinned action directly with no checkout step.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: ./lockfile-scrub
+        id: repair
+        with:
+          lockfile: .github/fixtures/lockfile-repair/bun.lock
+      - name: Verify the action created its own single-file commit
+        if: steps.repair.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ steps.repair.outputs.commit-sha }}
+        run: |
+          set -euo pipefail
+          test -n "$COMMIT_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT_SHA" --jq '.files | map(.filename)' > "$RUNNER_TEMP/changed-files.json"
+          jq -e '. == [".github/fixtures/lockfile-repair/bun.lock"]' "$RUNNER_TEMP/changed-files.json"

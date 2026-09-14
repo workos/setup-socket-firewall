@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
       - name: Check shell style and test coverage policy
         run: |
           set -euo pipefail
@@ -36,7 +36,7 @@ jobs:
           bash scripts/configure.test.sh
           bash scripts/teardown.test.sh
           bash scripts/scrub-lockfile.test.sh
-          node --test scripts/scrub-npm-lockfile.test.mjs
+          node --test scripts/scrub-npm-lockfile.test.mjs scripts/fix-lockfile.test.mjs
           bash scripts/build-release.test.sh
           bash scripts/publish-release.test.sh
 
@@ -76,10 +76,12 @@ jobs:
           writeFileSync('scrub-smoke/before', text);
           writeFileSync('scrub-smoke/expected', text.replaceAll('socket-firewall.workos.dev', 'registry.npmjs.org'));
           JS
-      - uses: ./lockfile-scrub
+      - name: Check normalization helper
         id: check
-        with:
-          lockfile: scrub-smoke/${{ matrix.lockfile }}
+        env:
+          SFW_SCRUB_LOCKFILE: scrub-smoke/${{ matrix.lockfile }}
+          SFW_SCRUB_MODE: check
+        run: bash scripts/scrub-lockfile.sh
       - name: Check mode preserves bytes
         env:
           CHANGED: ${{ steps.check.outputs.changed }}
@@ -87,11 +89,12 @@ jobs:
         run: |
           test "$CHANGED" = true
           cmp scrub-smoke/before "scrub-smoke/$LOCKFILE"
-      - uses: ./lockfile-scrub
+      - name: Apply normalization helper
         id: apply
-        with:
-          lockfile: scrub-smoke/${{ matrix.lockfile }}
-          mode: apply
+        env:
+          SFW_SCRUB_LOCKFILE: scrub-smoke/${{ matrix.lockfile }}
+          SFW_SCRUB_MODE: apply
+        run: bash scripts/scrub-lockfile.sh
       - name: Install from normalized lockfile without credentials
         working-directory: scrub-smoke
         env:
@@ -104,10 +107,12 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ --cache="$RUNNER_TEMP/scrub-npm-cache"
           node -e "require('left-pad')"
           cmp expected "$LOCKFILE"
-      - uses: ./lockfile-scrub
+      - name: Recheck normalization helper
         id: recheck
-        with:
-          lockfile: scrub-smoke/${{ matrix.lockfile }}
+        env:
+          SFW_SCRUB_LOCKFILE: scrub-smoke/${{ matrix.lockfile }}
+          SFW_SCRUB_MODE: check
+        run: bash scripts/scrub-lockfile.sh
       - name: Assert idempotence
         env:
           CHANGED: ${{ steps.recheck.outputs.changed }}

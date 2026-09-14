@@ -1,29 +1,31 @@
-name: Scrub Socket Firewall lockfile URLs
+name: Fix Socket Firewall lockfile URLs
 description: >-
-  Detect or normalize Socket Firewall registry URLs in Bun and npm lockfiles
-  without installing dependencies or committing changes.
+  Normalize a Bun or npm lockfile and commit the repair directly to the
+  same-repository pull request branch using GITHUB_TOKEN.
 inputs:
   lockfile:
     description: >-
-      Workspace-relative path to bun.lock, package-lock.json, or npm-shrinkwrap.json.
-      Nested paths are supported; symlinks and paths outside the workspace are rejected.
+      Repository-relative path to bun.lock, package-lock.json, or npm-shrinkwrap.json.
+      Reads committed PR-head content; no checkout is required. Symlinks are rejected.
     required: false
     default: bun.lock
   mode:
-    description: Check for supported URL repairs without changing the lockfile, or apply them.
+    description: >-
+      fix (default) commits a needed repair to the PR branch; check reports whether
+      repair is needed without committing. Requires a pull_request event.
     required: false
-    default: check
+    default: fix
+  token:
+    description: >-
+      Repository GITHUB_TOKEN. Automatic repair requires contents:write.
+      Never writes to a fork or the repository default branch.
+    required: false
+    default: ${{ github.token }}
 outputs:
   changed:
-    description: Whether the selected lockfile needs (check) or received (apply) a URL repair.
-    value: ${{ steps.scrub.outputs.changed }}
+    description: Whether the selected lockfile needed repair.
+  commit-sha:
+    description: The repair commit SHA, or empty if no commit was created.
 runs:
-  using: composite
-  steps:
-    - name: Scrub lockfile
-      id: scrub
-      shell: bash
-      env:
-        SFW_SCRUB_MODE: ${{ inputs.mode }}
-        SFW_SCRUB_LOCKFILE: ${{ inputs.lockfile }}
-      run: bash "$GITHUB_ACTION_PATH/../scripts/scrub-lockfile.sh"
+  using: node24
+  main: ../scripts/fix-lockfile.mjs
