@@ -1,6 +1,13 @@
 import { parseYamlSource as parse } from "./yaml.mjs";
 
 import { ACTION_REPOSITORY, APPROVED_RELEASE_SHA } from "./constants.mjs";
+import {
+  certainTeardown,
+  defaultsUncertain,
+  environmentUncertain,
+  observedIntegration,
+  toolchainPreservesRouting,
+} from "./integration.mjs";
 
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const UNSAFE_PUBLIC_TRIGGERS = new Set([
@@ -117,6 +124,19 @@ function normalizeExpression(value) {
   return String(value ?? "").replaceAll(/\s+/g, "");
 }
 
+// An ordinary run-step guard still has GitHub's implicit success() gating.
+// It can skip an install/script, but cannot run it after failed setup. Keep
+// explicit status predicates conservative and never apply this to uses/composites.
+function primaryRunGuard(step) {
+  if (
+    typeof step.run === "string" &&
+    typeof step.if === "string" &&
+    !/\b(?:always|cancelled|failure|success)\s*\(/i.test(step.if)
+  )
+    return undefined;
+  return step.if;
+}
+
 function expectedTokenExpression(visibility) {
   const secret =
     visibility === "public"
@@ -127,22 +147,75 @@ function expectedTokenExpression(visibility) {
 
 function splitCommands(script) {
   return String(script)
-    .split(/\r?\n|&&|\|\||;|(?<!\|)\|(?!\|)/)
+    .split(/\r?\n/)
+    .flatMap((line) =>
+      literalLogging(line.trim())
+        ? [line]
+        : line.split(/&&|\|\||;|(?<!\|)\|(?!\|)/),
+    )
     .map((command) => command.trim())
     .filter((command) => command.length > 0 && !command.startsWith("#"));
 }
 
-function commandWords(command) {
+function commandParts(command) {
   const words = command.split(/\s+/).filter((word) => word.length > 0);
+  const environment = {};
   let start = 0;
-  while (
-    start < words.length &&
-    (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[start]) ||
-      ["sudo", "time", "env", "exec"].includes(words[start]))
-  ) {
+  const assignments = () => {
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[start] ?? "")) {
+      // Keep keys for scope checks, never copy values to new diagnostics.
+      Object.defineProperty(environment, words[start].split("=", 1)[0], {
+        value: true,
+        enumerable: true,
+        configurable: true,
+      });
+      start += 1;
+    }
+  };
+  assignments();
+  if (words[start] === "env" && !words[start + 1]?.startsWith("-")) {
     start += 1;
+    assignments();
   }
-  return words.slice(start);
+  return { words: words.slice(start), environment };
+}
+
+function commandWords(command) {
+  return commandParts(command).words;
+}
+
+// Literal logging only: quoted source, substitution and shell controls are not
+// interpreted. These lines are transparent only to observed configuration.
+function literalLogging(command) {
+  // GitHub interpolates expressions before the shell sees even single quotes.
+  if (command.includes("${{")) return false;
+  return /^echo(?:\s+(?:"[^"$`\\\\]*"|'[^']*'|[A-Za-z0-9_.,:/@+=-]+))*\s*$/.test(
+    command,
+  );
+}
+
+function safePrologue(command) {
+  return /^set\s+(?:-e|-euo\s+pipefail)$/.test(command);
+}
+
+const REGISTRY_MUTATION =
+  /--(?:[^\s=]*:)?reg[a-z]*\b|--[^\s=]*(?:registry|userconfig)|(?:NPM|PNPM|BUN)_CONFIG_|npm_config_|\bnpm\s+config\s+(?:set|delete)\b/i;
+
+function directExecutor(words) {
+  if (!["npx", "bunx"].includes(words[0])) return undefined;
+  let target = 1;
+  while (["-y", "--yes"].includes(words[target])) target += 1;
+  // Only literal package/binary targets and literal arguments; no npm-exec
+  // grammar, shell interpretation or unsupported installer options.
+  if (!/^[A-Za-z0-9_@][A-Za-z0-9_@./:+-]*$/.test(words[target] ?? ""))
+    return undefined;
+  if (
+    words
+      .slice(target + 1)
+      .some((word) => !/^[A-Za-z0-9_@./:=,+%-]+$/.test(word))
+  )
+    return undefined;
+  return words.slice(0, target).join(" ");
 }
 
 function firstSubcommand(words) {
@@ -155,7 +228,8 @@ export function classifyCommand(command) {
   if (!program) {
     return { command, kind: "no-network" };
   }
-  if (program.includes("/")) return { command, kind: "unknown-wrapper" };
+  if (program.includes("/"))
+    return { command, program, kind: "unknown-wrapper" };
   const name = program;
 
   // Do not mistake an option's value (e.g. --prefix help) for the verb.
@@ -178,7 +252,13 @@ export function classifyCommand(command) {
     const subcommand = firstSubcommand(words);
     if (subcommand === "enable" || subcommand === "disable") {
       // Targeted controls may affect Yarn without changing pnpm's shim.
-      if (words.length !== 2) return { command, kind: "unknown-wrapper" };
+      if (words.length !== 2)
+        return {
+          command,
+          program,
+          corepackControl: subcommand,
+          kind: "unknown-wrapper",
+        };
       return { command, corepack: subcommand, kind: "no-network" };
     }
     return {
@@ -236,13 +316,14 @@ export function classifyCommand(command) {
     return {
       command,
       kind: executesProgram ? "unknown-wrapper" : "other-ecosystem",
+      installationCapable: executesProgram,
     };
   }
   if (ORCHESTRATORS.has(name)) {
     if (name === "lerna" && words.includes("bootstrap")) {
       return { command, kind: "js-public-download", manager: "npm" };
     }
-    return { command, kind: "unknown-wrapper" };
+    return { command, program, kind: "unknown-wrapper" };
   }
   if (
     WRAPPER_COMMANDS.has(name) ||
@@ -250,10 +331,11 @@ export function classifyCommand(command) {
     ((name === "bash" || name === "sh" || name === "zsh") &&
       words.slice(1).some((word) => /\.sh$/.test(word)))
   ) {
-    return { command, kind: "unknown-wrapper" };
+    return { command, program, kind: "unknown-wrapper" };
   }
   return {
     command,
+    program,
     kind: SIMPLE_COMMANDS.has(name) ? "no-network" : "unknown-wrapper",
   };
 }
@@ -294,6 +376,7 @@ function classifyUsesStep(step, context) {
           kind: "unknown-local-action",
           uses: step.uses,
           reason: "cyclic or deeply nested local action",
+          sourceError: "unresolved-local-action-expansion",
         },
       ];
     }
@@ -301,13 +384,40 @@ function classifyUsesStep(step, context) {
       context.localActions?.get(`${uses.path}/action.yml`) ??
       context.localActions?.get(`${uses.path}/action.yaml`);
     if (actionText === undefined) {
-      return [{ kind: "unknown-local-action", uses: step.uses }];
+      return [
+        {
+          kind: "unknown-local-action",
+          uses: step.uses,
+          sourceError: "unresolved-local-action-source",
+        },
+      ];
     }
     let action;
     try {
       action = parse(actionText);
     } catch {
-      return [{ kind: "unknown-local-action", uses: step.uses }];
+      return [
+        {
+          kind: "unknown-local-action",
+          uses: step.uses,
+          sourceError: "local-action-parse-error",
+        },
+      ];
+    }
+    if (
+      !isMapping(action) ||
+      !isMapping(action.runs) ||
+      typeof action.runs.using !== "string" ||
+      (action.runs.using === "composite" &&
+        (!Array.isArray(action.runs.steps) || action.runs.steps.length === 0))
+    ) {
+      return [
+        {
+          kind: "unknown-local-action",
+          uses: step.uses,
+          sourceError: "malformed-local-action",
+        },
+      ];
     }
     const steps = action?.runs?.steps;
     if (
@@ -345,6 +455,12 @@ function classifyUsesStep(step, context) {
           withInput["allow-external-fork-fallback"] ?? "false",
         ),
         kind,
+        id: step.id,
+        condition: step.if,
+        boundaryUncertainWithoutCondition: boundaryUncertain({
+          ...step,
+          if: undefined,
+        }),
         ref: uses.ref,
         token: normalizeExpression(withInput.token ?? ""),
         uses: step.uses,
@@ -387,9 +503,21 @@ function classifyUsesStep(step, context) {
         },
       ];
     }
-    return [{ kind: "unknown", uses: step.uses }];
+    return [
+      {
+        kind: "unknown",
+        uses: step.uses,
+        integrationToolchain: toolchainPreservesRouting(uses, withInput),
+      },
+    ];
   }
-  return [{ kind: "unknown", uses: step.uses }];
+  return [
+    {
+      kind: "unknown",
+      uses: step.uses,
+      integrationToolchain: toolchainPreservesRouting(uses, withInput),
+    },
+  ];
 }
 
 export function classifyStep(step, context = {}) {
@@ -398,13 +526,24 @@ export function classifyStep(step, context = {}) {
       {
         kind: "unknown-local-action",
         reason: "local action expansion limit reached",
+        sourceError: "unresolved-local-action-expansion",
       },
     ];
   }
   if (!isMapping(step)) return [{ kind: "unknown" }];
   if (condition(step.if) === "never") return [];
+  if (
+    isMapping(step.with) &&
+    Object.values(step.with).some(
+      (value) => value !== null && typeof value === "object",
+    )
+  )
+    return [{ kind: "unknown", sourceError: "malformed-action-input" }];
   let operations;
   let uncertain = boundaryUncertain(step);
+  let integrationUncertain =
+    boundaryUncertain({ ...step, env: undefined, if: primaryRunGuard(step) }) ||
+    environmentUncertain(step.env);
   if (
     step.uses !== undefined &&
     step.run === undefined &&
@@ -415,31 +554,99 @@ export function classifyStep(step, context = {}) {
   } else if (typeof step.run === "string" && step.uses === undefined) {
     // Deliberately not a shell interpreter: retain recognizable downloads but
     // never certify control flow, substitutions, redirections or custom shells.
-    uncertain ||=
+    const complexShell = (script) =>
       /[;'"$`|<>(){}\\]|(?:^|\s)(?:if|then|else|fi|for|while|case|eval|source|sudo)(?:\s|$)|(?<!&)&(?!&)/m.test(
-        step.run,
+        script,
       ) ||
       (step.shell !== undefined && !["bash", "sh"].includes(step.shell));
+    uncertain ||= complexShell(step.run);
+    integrationUncertain ||= complexShell(
+      step.run
+        .split(/\r?\n/)
+        .filter((line) => !literalLogging(line.trim()))
+        .join("\n"),
+    );
     operations = splitCommands(step.run).map((command) => {
       const operation = classifyCommand(command);
-      if (
-        /--(?:[^\s=]*:)?reg[a-z]*\b|--[^\s=]*(?:registry|userconfig)|(?:NPM|PNPM|BUN)_CONFIG_|npm_config_|\bnpm\s+config\s+(?:set|delete)\b/i.test(
-          command,
-        )
-      ) {
-        operation.registryMutating = true;
-      } else if (
+      const { words, environment } = commandParts(command);
+      const executorPrefix = directExecutor(words);
+      // npm's exact 'always' mode rewrites lockfile hosts to the configured
+      // registry; it does not select another registry. Other modes need review.
+      const replacementFlags = words.filter((word) =>
+        word.startsWith("--replace-registry-host"),
+      );
+      const configurationWords = command
+        .split(/\s+/)
+        .filter((word) => !word.startsWith("--replace-registry-host"));
+      const supportedReplacement =
+        words[0] === "npm" &&
+        replacementFlags.every(
+          (word) => word === "--replace-registry-host=always",
+        );
+      const registryMutating =
+        !literalLogging(command) &&
+        REGISTRY_MUTATION.test(configurationWords.join(" "));
+      const unsupportedFlags =
         operation.kind === "js-public-download" &&
         operation.corepack === undefined &&
-        commandWords(command).some(
-          (word) =>
-            word.startsWith("-") && !TRANSPARENT_INSTALL_FLAGS.has(word),
-        )
-      ) {
-        // Package managers accept abbreviated/configuration flags. Rather than
-        // emulate each parser, keep unrecognized options as review candidates.
+        words
+          .filter(
+            (word) =>
+              !(
+                supportedReplacement &&
+                word === "--replace-registry-host=always"
+              ),
+          )
+          .some(
+            (word) =>
+              word.startsWith("-") && !TRANSPARENT_INSTALL_FLAGS.has(word),
+          );
+      if (registryMutating) operation.registryMutating = true;
+      else if (
+        unsupportedFlags ||
+        (replacementFlags.length > 0 && !supportedReplacement)
+      )
         operation.uncertain = true;
+      if (Object.keys(environment).length && !registryMutating)
+        operation.uncertain = true;
+      operation.integrationUncertain =
+        environmentUncertain(environment) ||
+        (replacementFlags.length > 0 && !supportedReplacement) ||
+        (words[0] === "npm" && ["exec", "x"].includes(words[1])) ||
+        (unsupportedFlags && !registryMutating);
+      if (["npx", "bunx"].includes(words[0])) {
+        // Strict assurance still sees unknown executor code/configuration flags.
+        operation.uncertain = true;
+        operation.integrationExecutor = executorPrefix !== undefined;
+        operation.integrationUncertain =
+          environmentUncertain(environment) ||
+          (executorPrefix === undefined && !registryMutating);
+        if (executorPrefix !== undefined)
+          operation.registryMutating = REGISTRY_MUTATION.test(executorPrefix);
       }
+      // Reachability is not a certain state transition: a skipped disable
+      // cannot clear a persistent Corepack shim established by an earlier step.
+      if (
+        operation.corepackControl ||
+        ["enable", "disable"].includes(operation.corepack)
+      )
+        operation.integrationUncertain ||= condition(step.if) === "uncertain";
+      operation.integrationTransparent =
+        safePrologue(command) || literalLogging(command);
+      operation.integrationScript =
+        ["npm", "pnpm", "bun", "yarn"].includes(words[0]) &&
+        ((words[1] === "run" && /^[A-Za-z0-9_:.+-]+$/.test(words[2] ?? "")) ||
+          ["test", "start", "stop", "restart"].includes(words[1])) &&
+        words
+          .slice(2)
+          .every(
+            (word, index) =>
+              /^[A-Za-z0-9_@./:=,+%-]+$/.test(word) &&
+              (!word.startsWith("-") ||
+                word === "--" ||
+                words.slice(2, index + 2).includes("--")),
+          ) &&
+        !registryMutating;
       return operation;
     });
   } else {
@@ -448,6 +655,9 @@ export function classifyStep(step, context = {}) {
   return operations.map((operation) => ({
     ...operation,
     ...(uncertain || operation.uncertain ? { uncertain: true } : {}),
+    integrationUncertain:
+      integrationUncertain ||
+      (operation.integrationUncertain ?? operation.uncertain ?? false),
   }));
 }
 
@@ -472,6 +682,7 @@ function collectViolations(operations, context, triggers, job) {
   const publishes = [];
   const expectedToken = expectedTokenExpression(context.visibility);
   let activeSetup;
+  let lastSetup;
   let registryInvalidated = false;
   let publishBoundary = true;
   let corepackEnabled = false;
@@ -520,6 +731,7 @@ function collectViolations(operations, context, triggers, job) {
       }
     }
     if (operation.kind === "sfw-setup") {
+      lastSetup = operation;
       registryInvalidated = false;
       setups.push(index);
       publishBoundary = false;
@@ -551,8 +763,7 @@ function collectViolations(operations, context, triggers, job) {
     if (operation.kind === "sfw-teardown") {
       registryInvalidated = false;
       activeSetup = undefined;
-      publishBoundary =
-        operation.ref === APPROVED_RELEASE_SHA && !operation.uncertain;
+      publishBoundary = certainTeardown(operation, lastSetup);
       if (operation.ref !== APPROVED_RELEASE_SHA) {
         violations.push(
           `sfw-teardown ref "${operation.ref}" does not match the approved release SHA`,
@@ -619,9 +830,30 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
       operations: [],
       status: "unknown",
       violations: ["job definition is not a mapping"],
+      integration: {
+        disposition: "needs-review",
+        downloads: [],
+        notes: ["malformed-job"],
+        runtimeVerification: "not-performed",
+      },
     };
   }
 
+  if (job.uses !== undefined && condition(job.if) === "never") {
+    return {
+      job: jobName,
+      managers: [],
+      operations: [],
+      status: "no-in-scope-download",
+      violations: [],
+      integration: {
+        disposition: "no-js-ci",
+        downloads: [],
+        notes: [],
+        runtimeVerification: "not-performed",
+      },
+    };
+  }
   if (job.uses !== undefined) {
     const violations =
       job.secrets === "inherit"
@@ -633,6 +865,12 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
       operations: [{ kind: "reusable-call", uses: String(job.uses) }],
       status: "reusable-call",
       violations,
+      integration: {
+        disposition: "needs-review",
+        downloads: [],
+        notes: ["unresolved-reusable-workflow"],
+        runtimeVerification: "not-performed",
+      },
     };
   }
 
@@ -720,7 +958,14 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
     status = "no-in-scope-download";
   }
 
-  return { job: jobName, managers, operations, status, violations };
+  return {
+    job: jobName,
+    managers,
+    operations,
+    status,
+    violations,
+    integration: observedIntegration(operations, job, context),
+  };
 }
 
 export function classifyWorkflow(text, context) {
@@ -771,6 +1016,9 @@ export function classifyWorkflow(text, context) {
         ...context,
         workflowUncertain:
           workflow.env !== undefined || workflow.defaults !== undefined,
+        integrationContextUncertain:
+          environmentUncertain(workflow.env) ||
+          defaultsUncertain(workflow.defaults),
       },
       triggers,
     ),

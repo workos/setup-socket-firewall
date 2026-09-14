@@ -723,7 +723,9 @@ test("audit: moving branch cannot change tree or nested source snapshot", async 
     fixtureRepository,
   );
   assert.equal(row.headSha, sha);
-  assert.equal(row.disposition, "needs-review");
+  // The certain install precedes the unresolved cycle; retain both signals.
+  assert.equal(row.disposition, "needs-sfw");
+  assert.equal(row.assuranceDisposition, "needs-review");
   assert.deepEqual(reads.sort(), [...sources.keys()].sort());
   assert.ok(
     row.workflows[0].jobs[0].operations.some(
@@ -921,7 +923,7 @@ test("classifier: composite inner boundaries survive expansion", () => {
         { ...teardownStep, ...boundary },
         { run: "npm publish" },
       ]).status,
-      "unsafe-publish",
+      boundary.if === "always()" ? "unknown" : "unsafe-publish",
     );
   }
 });

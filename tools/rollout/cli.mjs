@@ -41,7 +41,10 @@ export async function main(argv, options = {}) {
     });
     await writeReportAtomically(reportPath, report);
     const summary = {
+      schemaVersion: report.schemaVersion,
       dispositions: report.dispositions,
+      assuranceDispositions: report.assuranceDispositions,
+      runtimeVerification: report.runtimeVerification,
       inventory: inventoryCounts(report.inventory),
       scanErrors: report.scanErrors,
       scanStatus: report.scanStatus,
