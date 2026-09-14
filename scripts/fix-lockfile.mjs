@@ -161,7 +161,7 @@ async function main() {
     }, githubApi(process.env.INPUT_TOKEN, process.env.GITHUB_API_URL, process.env.GITHUB_GRAPHQL_URL));
     appendFileSync(process.env.GITHUB_OUTPUT, `changed=${result.changed}\ncommit-sha=${result.commitSha}\n`);
     const summary = result.commitSha
-      ? `Committed lockfile repair to the PR branch: ${result.commitSha}. GITHUB_TOKEN commits do not trigger another Actions run.`
+      ? `Committed lockfile repair to the PR branch: ${result.commitSha}. Do not assume follow-up CI runs automatically: GitHub may suppress it or require approval for a GITHUB_TOKEN commit.`
       : result.changed ? 'Lockfile needs repair (check mode; no commit created).' : 'Lockfile is already clean; no commit created.';
     console.log(summary);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);

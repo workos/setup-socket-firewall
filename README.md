@@ -124,7 +124,7 @@ Branch safety is enforced **inside the action**, not left to caller shell guards
 
 Use this action in a dedicated job on an ephemeral Linux runner supporting Node 24 JavaScript actions, with Bash/coreutils available. GitHub supplies the Node runtime. It never executes target-repository code. The token is used only for GitHub API requests and is not passed to the normalization subprocess.
 
-`GITHUB_TOKEN` commits do not trigger another Actions run. Normalizing a lockfile does not establish that all application CI checks pass on the new commit. Repositories requiring fresh-head checks need a separately reviewed solution. Branch protection and token-policy denials fail the action; it does not bypass those controls. If several selected locks need repair, each commit advances the head, so use a subsequent PR event for the next repair rather than parallel writers using the same event SHA.
+Do not rely on `GITHUB_TOKEN` commits to run follow-up CI automatically: GitHub can suppress those workflows or hold them for approval. The live branch-repair trial created `action_required` follow-up runs with no jobs executed. Normalizing a lockfile does not establish that all application CI checks pass on the new commit. Repositories requiring fresh-head checks need a separately reviewed solution. Branch protection and token-policy denials fail the action; it does not bypass those controls. If several selected locks need repair, each commit advances the head, so use a subsequent PR event for the next repair rather than parallel writers using the same event SHA.
 
 ### Package publication
 
