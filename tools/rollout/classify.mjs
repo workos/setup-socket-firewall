@@ -1,4 +1,4 @@
-import { parse } from "yaml";
+import { parseYamlSource as parse } from "./yaml.mjs";
 
 import { ACTION_REPOSITORY, APPROVED_RELEASE_SHA } from "./constants.mjs";
 
@@ -27,33 +27,9 @@ const NPM_DOWNLOAD = new Set([
   "upgrade",
   "x",
 ]);
-const NPM_NO_NETWORK = new Set([
-  "build",
-  "cache",
-  "config",
-  "get",
-  "help",
-  "link",
-  "login",
-  "logout",
-  "ls",
-  "outdated",
-  "pack",
-  "ping",
-  "prune",
-  "rebuild",
-  "restart",
-  "run",
-  "run-script",
-  "set",
-  "start",
-  "stop",
-  "t",
-  "test",
-  "version",
-  "view",
-  "whoami",
-]);
+// Only literal informational commands are considered transparent. Scripts,
+// lifecycle commands and executors can hide dependency installation.
+const NPM_NO_NETWORK = new Set(["get", "help", "ls", "whoami"]);
 const PNPM_DOWNLOAD = new Set([
   "add",
   "dlx",
@@ -65,25 +41,9 @@ const PNPM_DOWNLOAD = new Set([
   "up",
   "update",
 ]);
-const PNPM_NO_NETWORK = new Set([
-  "build",
-  "config",
-  "exec",
-  "lint",
-  "list",
-  "ls",
-  "pack",
-  "prune",
-  "rebuild",
-  "run",
-  "start",
-  "t",
-  "test",
-  "version",
-  "why",
-]);
+const PNPM_NO_NETWORK = new Set(["list", "ls", "why"]);
 const BUN_DOWNLOAD = new Set(["add", "i", "install", "update", "x"]);
-const BUN_NO_NETWORK = new Set(["build", "run", "test"]);
+const BUN_NO_NETWORK = new Set();
 const YARN_DOWNLOAD = new Set(["add", "dlx", "i", "import", "install", "up"]);
 const OTHER_ECOSYSTEM_COMMANDS = new Set([
   "apk",
@@ -94,7 +54,6 @@ const OTHER_ECOSYSTEM_COMMANDS = new Set([
   "cargo",
   "composer",
   "conda",
-  "docker",
   "dotnet",
   "gem",
   "go",
@@ -110,7 +69,49 @@ const OTHER_ECOSYSTEM_COMMANDS = new Set([
   "uv",
 ]);
 const WRAPPER_COMMANDS = new Set(["just", "make", "mise", "rake", "task"]);
-const NO_NETWORK_ORCHESTRATORS = new Set(["lerna", "nx", "rush", "turbo"]);
+const ORCHESTRATORS = new Set(["lerna", "nx", "rush", "turbo"]);
+const SIMPLE_COMMANDS = new Set(["echo", "printf", "pwd", "true", "false"]);
+const TRANSPARENT_INSTALL_FLAGS = new Set([
+  "--ignore-scripts",
+  "--no-audit",
+  "--no-fund",
+  "--frozen-lockfile",
+  "--immutable",
+  "--offline",
+  "--prefer-offline",
+  "--no-progress",
+  "--no-save",
+  "--save-exact",
+  "--save-dev",
+  "--global",
+  "-g",
+  "-D",
+  "-y",
+]);
+
+function isMapping(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function condition(value) {
+  if (value === undefined) return "always";
+  const expression = normalizeExpression(value).replace(
+    /^\$\{\{(.*)\}\}$/,
+    "$1",
+  );
+  if (expression === "false") return "never";
+  if (expression === "true") return "always";
+  return "uncertain";
+}
+
+function boundaryUncertain(step) {
+  return (
+    condition(step.if) === "uncertain" ||
+    (step["continue-on-error"] !== undefined &&
+      condition(step["continue-on-error"]) !== "never") ||
+    step.env !== undefined
+  );
+}
 
 function normalizeExpression(value) {
   return String(value ?? "").replaceAll(/\s+/g, "");
@@ -154,7 +155,17 @@ export function classifyCommand(command) {
   if (!program) {
     return { command, kind: "no-network" };
   }
-  const name = program.replace(/^.*\//, "");
+  if (program.includes("/")) return { command, kind: "unknown-wrapper" };
+  const name = program;
+
+  // Do not mistake an option's value (e.g. --prefix help) for the verb.
+  // Unsupported leading options remain review candidates, not a parsed shell.
+  if (
+    ["npm", "pnpm", "bun", "yarn", "corepack"].includes(name) &&
+    words[1]?.startsWith("-")
+  ) {
+    return { command, kind: "unknown-wrapper", manager: name };
+  }
 
   if (name === "npx" || name === "bunx") {
     return {
@@ -166,6 +177,8 @@ export function classifyCommand(command) {
   if (name === "corepack") {
     const subcommand = firstSubcommand(words);
     if (subcommand === "enable" || subcommand === "disable") {
+      // Targeted controls may affect Yarn without changing pnpm's shim.
+      if (words.length !== 2) return { command, kind: "unknown-wrapper" };
       return { command, corepack: subcommand, kind: "no-network" };
     }
     return {
@@ -187,7 +200,7 @@ export function classifyCommand(command) {
       if (subcommand === undefined || YARN_DOWNLOAD.has(subcommand)) {
         return { command, kind: "yarn-blocked", manager: "yarn" };
       }
-      return { command, kind: "no-network" };
+      return { command, kind: "unknown-wrapper", manager: "yarn" };
     }
     if (subcommand === "publish") {
       return { command, kind: "js-publish", manager: name };
@@ -210,23 +223,26 @@ export function classifyCommand(command) {
       }
       return { command, kind: "js-public-download", manager: name };
     }
-    if (
-      subcommand === undefined ||
-      quiet.has(subcommand) ||
-      (name === "bun" && /[./]/.test(subcommand))
-    ) {
+    if (quiet.has(subcommand)) {
       return { command, kind: "no-network" };
     }
-    return { command, kind: "unknown", manager: name };
+    return { command, kind: "unknown-wrapper", manager: name };
   }
   if (OTHER_ECOSYSTEM_COMMANDS.has(name)) {
-    return { command, kind: "other-ecosystem" };
+    // Language/package executors can wrap JS installers just like shell scripts.
+    const executesProgram = words
+      .slice(1)
+      .some((word) => ["run", "exec", "generate", "shell"].includes(word));
+    return {
+      command,
+      kind: executesProgram ? "unknown-wrapper" : "other-ecosystem",
+    };
   }
-  if (NO_NETWORK_ORCHESTRATORS.has(name)) {
+  if (ORCHESTRATORS.has(name)) {
     if (name === "lerna" && words.includes("bootstrap")) {
       return { command, kind: "js-public-download", manager: "npm" };
     }
-    return { command, kind: "no-network" };
+    return { command, kind: "unknown-wrapper" };
   }
   if (
     WRAPPER_COMMANDS.has(name) ||
@@ -236,7 +252,10 @@ export function classifyCommand(command) {
   ) {
     return { command, kind: "unknown-wrapper" };
   }
-  return { command, kind: "no-network" };
+  return {
+    command,
+    kind: SIMPLE_COMMANDS.has(name) ? "no-network" : "unknown-wrapper",
+  };
 }
 
 function parseUses(uses) {
@@ -268,6 +287,16 @@ function classifyUsesStep(step, context) {
   const withInput = step.with ?? {};
 
   if (uses.kind === "local") {
+    const stack = context.actionStack ?? [];
+    if (stack.includes(uses.path) || stack.length >= 20) {
+      return [
+        {
+          kind: "unknown-local-action",
+          uses: step.uses,
+          reason: "cyclic or deeply nested local action",
+        },
+      ];
+    }
     const actionText =
       context.localActions?.get(`${uses.path}/action.yml`) ??
       context.localActions?.get(`${uses.path}/action.yaml`);
@@ -281,18 +310,25 @@ function classifyUsesStep(step, context) {
       return [{ kind: "unknown-local-action", uses: step.uses }];
     }
     const steps = action?.runs?.steps;
-    if (action?.runs?.using !== "composite" || !Array.isArray(steps)) {
-      return [{ kind: "local-action", uses: step.uses }];
+    if (
+      action?.runs?.using !== "composite" ||
+      !Array.isArray(steps) ||
+      steps.length === 0
+    ) {
+      return [{ kind: "unknown-local-action", uses: step.uses }];
     }
     return steps.flatMap((inner) =>
-      classifyStep(inner, context).map((operation) => ({
+      classifyStep(inner, {
+        ...context,
+        actionStack: [...stack, uses.path],
+      }).map((operation) => ({
         ...operation,
         via: step.uses,
       })),
     );
   }
   if (uses.kind === "docker") {
-    return [{ kind: "other-ecosystem", uses: step.uses }];
+    return [{ kind: "unknown", uses: step.uses }];
   }
 
   if (uses.repository === ACTION_REPOSITORY) {
@@ -302,6 +338,9 @@ function classifyUsesStep(step, context) {
     }
     return [
       {
+        configureBun: normalizeExpression(
+          withInput["configure-bun"] ?? "false",
+        ),
         fallback: normalizeExpression(
           withInput["allow-external-fork-fallback"] ?? "false",
         ),
@@ -312,7 +351,7 @@ function classifyUsesStep(step, context) {
       },
     ];
   }
-  if (uses.repository === "actions/setup-node") {
+  if (uses.repository === "actions/setup-node" && uses.subpath === "") {
     return [
       {
         kind: "setup-node",
@@ -321,10 +360,12 @@ function classifyUsesStep(step, context) {
       },
     ];
   }
-  if (uses.repository === "actions/checkout") {
+  if (uses.repository === "actions/checkout" && uses.subpath === "") {
     return [
       {
         kind: "checkout",
+        uncertain:
+          withInput.ref !== undefined || withInput.repository !== undefined,
         persistCredentials: normalizeExpression(
           withInput["persist-credentials"] ?? "true",
         ),
@@ -334,33 +375,80 @@ function classifyUsesStep(step, context) {
       },
     ];
   }
-  if (uses.repository === "pnpm/action-setup") {
+  if (uses.repository === "pnpm/action-setup" && uses.subpath === "") {
     const runInstall = withInput.run_install;
     if (runInstall !== undefined && String(runInstall) !== "false") {
-      return [{ kind: "js-public-download", manager: "pnpm", uses: step.uses }];
+      return [
+        {
+          kind: "js-public-download",
+          manager: "pnpm",
+          uses: step.uses,
+          uncertain: true,
+        },
+      ];
     }
-    return [{ kind: "toolchain", uses: step.uses }];
+    return [{ kind: "unknown", uses: step.uses }];
   }
-  if (
-    uses.repository === "changesets/action" ||
-    uses.repository === "JS-DevTools/npm-publish"
-  ) {
-    return [{ kind: "js-publish", manager: "npm", uses: step.uses }];
-  }
-  return [{ kind: "remote-action", uses: step.uses }];
+  return [{ kind: "unknown", uses: step.uses }];
 }
 
-export function classifyStep(step, context) {
-  if (step === null || typeof step !== "object") {
-    return [{ kind: "unknown" }];
+export function classifyStep(step, context = {}) {
+  if (context.stepBudget && --context.stepBudget.remaining < 0) {
+    return [
+      {
+        kind: "unknown-local-action",
+        reason: "local action expansion limit reached",
+      },
+    ];
   }
-  if (step.uses !== undefined) {
-    return classifyUsesStep(step, context);
+  if (!isMapping(step)) return [{ kind: "unknown" }];
+  if (condition(step.if) === "never") return [];
+  let operations;
+  let uncertain = boundaryUncertain(step);
+  if (
+    step.uses !== undefined &&
+    step.run === undefined &&
+    typeof step.uses === "string" &&
+    (step.with === undefined || isMapping(step.with))
+  ) {
+    operations = classifyUsesStep(step, context);
+  } else if (typeof step.run === "string" && step.uses === undefined) {
+    // Deliberately not a shell interpreter: retain recognizable downloads but
+    // never certify control flow, substitutions, redirections or custom shells.
+    uncertain ||=
+      /[;'"$`|<>(){}\\]|(?:^|\s)(?:if|then|else|fi|for|while|case|eval|source|sudo)(?:\s|$)|(?<!&)&(?!&)/m.test(
+        step.run,
+      ) ||
+      (step.shell !== undefined && !["bash", "sh"].includes(step.shell));
+    operations = splitCommands(step.run).map((command) => {
+      const operation = classifyCommand(command);
+      if (
+        /--(?:[^\s=]*:)?reg[a-z]*\b|--[^\s=]*(?:registry|userconfig)|(?:NPM|PNPM|BUN)_CONFIG_|npm_config_|\bnpm\s+config\s+(?:set|delete)\b/i.test(
+          command,
+        )
+      ) {
+        operation.registryMutating = true;
+      } else if (
+        operation.kind === "js-public-download" &&
+        operation.corepack === undefined &&
+        commandWords(command).some(
+          (word) =>
+            word.startsWith("-") && !TRANSPARENT_INSTALL_FLAGS.has(word),
+        )
+      ) {
+        // Package managers accept abbreviated/configuration flags. Rather than
+        // emulate each parser, keep unrecognized options as review candidates.
+        operation.uncertain = true;
+      }
+      return operation;
+    });
+  } else {
+    operations = [{ kind: "unknown" }];
   }
-  if (step.run !== undefined) {
-    return splitCommands(step.run).map((command) => classifyCommand(command));
-  }
-  return [{ kind: "no-network" }];
+  return operations.map((operation) => ({
+    ...operation,
+    ...(uncertain || operation.uncertain ? { uncertain: true } : {}),
+  }));
 }
 
 function normalizeTriggers(workflow) {
@@ -380,27 +468,68 @@ function normalizeTriggers(workflow) {
 function collectViolations(operations, context, triggers, job) {
   const violations = [];
   const downloads = [];
-  let lastRegistryMutation = -1;
   const setups = [];
-  const teardowns = [];
   const publishes = [];
   const expectedToken = expectedTokenExpression(context.visibility);
+  let activeSetup;
+  let registryInvalidated = false;
+  let publishBoundary = true;
+  let corepackEnabled = false;
 
   operations.forEach((operation, index) => {
+    if (operation.corepack === "enable") corepackEnabled = true;
+    if (operation.corepack === "disable") corepackEnabled = false;
     if (operation.kind === "js-public-download") {
       downloads.push(index);
+      if (registryInvalidated || operation.registryMutating) {
+        violations.push(
+          `registry-mutating configuration precedes download operation ${index + 1}`,
+        );
+      }
+      if (operation.manager === "pnpm" && corepackEnabled) {
+        violations.push(
+          `Corepack may lazily download pnpm directly from registry.npmjs.org at operation ${index + 1}; install pinned pnpm with npm through Socket Firewall instead`,
+        );
+      }
+      if (
+        activeSetup === undefined ||
+        operation.uncertain ||
+        operation.registryMutating
+      ) {
+        violations.push(
+          `download operation ${index + 1} has no certain active Socket Firewall setup`,
+        );
+      }
+      if (operation.manager === "bun" && activeSetup?.configureBun !== "true") {
+        violations.push(
+          `Bun download operation ${index + 1} requires configure-bun: true`,
+        );
+      }
+      publishBoundary = false;
     }
-    if (
-      operation.kind === "setup-node" &&
-      operation.registryMutating === true
-    ) {
-      lastRegistryMutation = index;
+    if (operation.registryMutating === true) {
+      registryInvalidated = true;
+      activeSetup = undefined;
     }
     if (operation.kind === "js-publish") {
       publishes.push(index);
+      if (setups.length > 0 && !publishBoundary) {
+        violations.push(
+          "publish follows Socket Firewall setup without a same-SHA teardown boundary",
+        );
+      }
     }
     if (operation.kind === "sfw-setup") {
+      registryInvalidated = false;
       setups.push(index);
+      publishBoundary = false;
+      activeSetup =
+        operation.ref === APPROVED_RELEASE_SHA &&
+        operation.token === expectedToken &&
+        !operation.uncertain &&
+        operation.fallback === "false"
+          ? operation
+          : undefined;
       if (operation.ref !== APPROVED_RELEASE_SHA) {
         violations.push(
           FULL_SHA_PATTERN.test(operation.ref)
@@ -420,7 +549,10 @@ function collectViolations(operations, context, triggers, job) {
       }
     }
     if (operation.kind === "sfw-teardown") {
-      teardowns.push(index);
+      registryInvalidated = false;
+      activeSetup = undefined;
+      publishBoundary =
+        operation.ref === APPROVED_RELEASE_SHA && !operation.uncertain;
       if (operation.ref !== APPROVED_RELEASE_SHA) {
         violations.push(
           `sfw-teardown ref "${operation.ref}" does not match the approved release SHA`,
@@ -429,18 +561,6 @@ function collectViolations(operations, context, triggers, job) {
     }
   });
 
-  const corepackEnable = operations.findIndex(
-    (operation) => operation.corepack === "enable",
-  );
-  const firstPnpmDownload = operations.findIndex(
-    (operation) =>
-      operation.kind === "js-public-download" && operation.manager === "pnpm",
-  );
-  if (corepackEnable !== -1 && firstPnpmDownload > corepackEnable) {
-    violations.push(
-      "Corepack may lazily download pnpm directly from registry.npmjs.org; install the pinned pnpm package with npm through Socket Firewall before invoking pnpm",
-    );
-  }
   if (
     operations.some(
       (operation) =>
@@ -454,40 +574,8 @@ function collectViolations(operations, context, triggers, job) {
     );
   }
 
-  const firstDownload = downloads[0];
-  const validSetup = setups.find(
-    (index) =>
-      operations[index].ref === APPROVED_RELEASE_SHA &&
-      operations[index].token === expectedToken,
-  );
-  if (firstDownload !== undefined && setups.length > 0) {
-    if (validSetup === undefined) {
-      violations.push("no valid Socket Firewall setup precedes downloads");
-    } else if (validSetup > firstDownload) {
-      violations.push("Socket Firewall setup runs after the first download");
-    } else if (
-      lastRegistryMutation > validSetup &&
-      lastRegistryMutation < firstDownload
-    ) {
-      violations.push(
-        "registry-mutating setup-node runs between Socket Firewall setup and the first download",
-      );
-    }
-  }
-
-  if (publishes.length > 0 && setups.length > 0) {
-    const lastDownload = downloads.at(-1) ?? -1;
-    const validTeardown = teardowns.find(
-      (index) =>
-        operations[index].ref === APPROVED_RELEASE_SHA &&
-        index > lastDownload &&
-        index < publishes[0],
-    );
-    if (validTeardown === undefined) {
-      violations.push(
-        "publish follows Socket Firewall setup without a same-SHA teardown boundary",
-      );
-    }
+  if (downloads.length > 0 && setups.length > 0 && setups[0] > downloads[0]) {
+    violations.push("Socket Firewall setup runs after the first download");
   }
 
   if (context.visibility === "public") {
@@ -523,8 +611,8 @@ function collectViolations(operations, context, triggers, job) {
   return violations;
 }
 
-export function classifyJob(jobName, job, context, triggers) {
-  if (job === null || typeof job !== "object") {
+export function classifyJob(jobName, job, context = {}, triggers = []) {
+  if (!isMapping(job)) {
     return {
       job: jobName,
       managers: [],
@@ -549,7 +637,31 @@ export function classifyJob(jobName, job, context, triggers) {
   }
 
   const steps = Array.isArray(job.steps) ? job.steps : [];
-  const operations = steps.flatMap((step) => classifyStep(step, context));
+  const stepContext = { ...context, stepBudget: { remaining: 1000 } };
+  const operations =
+    condition(job.if) === "never"
+      ? []
+      : steps.flatMap((step, index) =>
+          classifyStep(step, stepContext).map((operation) => ({
+            ...operation,
+            step: index + 1,
+          })),
+        );
+  if (
+    !Array.isArray(job.steps) ||
+    steps.length === 0 ||
+    job.container !== undefined ||
+    job.services !== undefined ||
+    boundaryUncertain(job) ||
+    context.workflowUncertain ||
+    (job.defaults?.run?.shell !== undefined &&
+      !["bash", "sh"].includes(job.defaults.run.shell))
+  ) {
+    operations.push({
+      kind: "unknown",
+      reason: "opaque job or workflow execution context",
+    });
+  }
   const violations = collectViolations(operations, context, triggers, job);
 
   const kinds = new Set(operations.map((operation) => operation.kind));
@@ -568,7 +680,12 @@ export function classifyJob(jobName, job, context, triggers) {
   const hasUnknown =
     kinds.has("unknown") ||
     kinds.has("unknown-wrapper") ||
-    kinds.has("unknown-local-action");
+    kinds.has("unknown-local-action") ||
+    operations.some(
+      (operation) =>
+        operation.uncertain ||
+        (operation.kind === "sfw-setup" && operation.fallback !== "false"),
+    );
   const publishUnsafe = violations.some((violation) =>
     violation.includes("without a same-SHA teardown"),
   );
@@ -583,14 +700,18 @@ export function classifyJob(jobName, job, context, triggers) {
     status = "unsafe-trust";
   } else if (publishUnsafe) {
     status = "unsafe-publish";
+  } else if (hasUnknown) {
+    // A conditional setup, opaque wrapper, or supported fork fallback is not
+    // proof of a missing integration. Retain violations for private review.
+    status = "unknown";
   } else if (kinds.has("yarn-blocked")) {
     status = "blocked-yarn";
-  } else if (hasDownload && hasSetup && violations.length === 0) {
+  } else if (hasDownload && violations.length > 0) {
+    status = "unprotected";
+  } else if (hasDownload && hasSetup) {
     status = "protected";
   } else if (hasDownload) {
     status = "unprotected";
-  } else if (hasUnknown) {
-    status = "unknown";
   } else if (hasPublish) {
     status = hasSetup ? "unsafe-publish" : "safe-publish";
   } else if (kinds.has("other-ecosystem")) {
@@ -615,10 +736,14 @@ export function classifyWorkflow(text, context) {
       triggers: [],
     };
   }
-  if (workflow === null || typeof workflow !== "object") {
+  if (
+    !isMapping(workflow) ||
+    !isMapping(workflow.jobs) ||
+    Object.keys(workflow.jobs).length === 0
+  ) {
     return {
       jobs: [],
-      parseError: "workflow is not a mapping",
+      parseError: "workflow or jobs is not a nonempty mapping",
       path: context.path,
       status: "unknown",
       triggers: [],
@@ -626,11 +751,29 @@ export function classifyWorkflow(text, context) {
   }
 
   const triggers = normalizeTriggers(workflow);
+  if (triggers.length === 0) {
+    return {
+      jobs: [],
+      path: context.path,
+      triggers,
+      status: "unknown",
+      parseError: "workflow has no recognized trigger declaration",
+    };
+  }
   const jobEntries = Object.entries(workflow.jobs ?? {}).sort(([a], [b]) =>
     a < b ? -1 : a > b ? 1 : 0,
   );
   const jobs = jobEntries.map(([jobName, job]) =>
-    classifyJob(jobName, job, context, triggers),
+    classifyJob(
+      jobName,
+      job,
+      {
+        ...context,
+        workflowUncertain:
+          workflow.env !== undefined || workflow.defaults !== undefined,
+      },
+      triggers,
+    ),
   );
 
   return { jobs, path: context.path, triggers };

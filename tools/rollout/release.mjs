@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { parse as parseYaml } from "yaml";
+import { parseYamlSource as parseYaml } from "./yaml.mjs";
 
 import {
   ACTION_REPOSITORY,

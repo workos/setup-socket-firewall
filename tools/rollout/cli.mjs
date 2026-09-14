@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { GitHubClient } from "./github.mjs";
 import { captureRepositoryInventory } from "./inventory.mjs";
@@ -10,6 +10,16 @@ import { verifyActionRelease } from "./release.mjs";
 
 const COMMANDS = new Set(["audit", "inventory", "verify-action"]);
 const REPORT_URL = new URL("../../reports/live-audit.json", import.meta.url);
+const INVENTORY_URL = new URL("../../reports/inventory.json", import.meta.url);
+
+function inventoryCounts(inventory) {
+  const { activeCount, archivedCount, totalCount, visibility } = inventory;
+  return { activeCount, archivedCount, totalCount, visibility };
+}
+
+export function scanExitCode(result) {
+  return result.scanErrors > 0 ? 1 : 0;
+}
 
 export async function main(argv, options = {}) {
   if (argv.length !== 1 || !COMMANDS.has(argv[0])) {
@@ -21,7 +31,7 @@ export async function main(argv, options = {}) {
   const command = argv[0];
 
   if (command === "audit") {
-    const reportPath = options.reportPath ?? REPORT_URL.pathname;
+    const reportPath = options.reportPath ?? fileURLToPath(REPORT_URL);
     const report = await runAudit(client, {
       progress: (done, total) => {
         if (done % 25 === 0 || done === total) {
@@ -32,7 +42,10 @@ export async function main(argv, options = {}) {
     await writeReportAtomically(reportPath, report);
     const summary = {
       dispositions: report.dispositions,
-      inventory: report.inventory,
+      inventory: inventoryCounts(report.inventory),
+      scanErrors: report.scanErrors,
+      scanStatus: report.scanStatus,
+      coverage: report.coverage,
       reportPath,
     };
     output.write(`${JSON.stringify(summary, null, 2)}\n`);
@@ -43,7 +56,15 @@ export async function main(argv, options = {}) {
     command === "verify-action"
       ? await verifyActionRelease({ client })
       : await captureRepositoryInventory(client, ORGANIZATION);
-  output.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (command === "inventory") {
+    const reportPath = options.reportPath ?? fileURLToPath(INVENTORY_URL);
+    await writeReportAtomically(reportPath, result);
+    output.write(
+      `${JSON.stringify({ ...inventoryCounts(result), scanStatus: "complete", coverage: "token-visible repositories only", reportPath }, null, 2)}\n`,
+    );
+  } else {
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
+  }
   return result;
 }
 
@@ -51,8 +72,15 @@ const invokedPath = process.argv[1]
   ? pathToFileURL(process.argv[1]).href
   : undefined;
 if (import.meta.url === invokedPath) {
-  main(process.argv.slice(2)).catch((error) => {
-    process.stderr.write(`rollout verifier failed: ${error.message}\n`);
-    process.exitCode = 1;
-  });
+  main(process.argv.slice(2))
+    .then((result) => {
+      process.exitCode = scanExitCode(result);
+    })
+    .catch(() => {
+      // API errors can contain private repository names or workflow source.
+      process.stderr.write(
+        `${JSON.stringify({ scanStatus: "failed", scanErrors: 1, error: "verifier failed; check command, access, API availability, and snapshot prerequisites privately" })}\n`,
+      );
+      process.exitCode = 1;
+    });
 }

@@ -6,7 +6,7 @@ Thanks for helping improve the WorkOS Socket Firewall GitHub Action.
 
 - Bash on Linux or macOS
 - Go, for the pinned `shfmt` check
-- Node.js 22 and npm, for the source-only rollout verifier
+- Node.js 22 and npm, for the source-only read-only CI gap detector
 - ShellCheck
 - Passwordless `sudo` and a disposable Linux runner for integration testing that modifies `/etc/hosts`
 
@@ -28,9 +28,19 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run check
 ```
 
-CI runs the same static and unit checks on every pull request. Token-backed GitHub-hosted smoke jobs additionally exercise every supported package manager.
+`npm run check` runs formatting and pure mocked Node tests offline after dependencies are installed. `npm test` and `npm run test:unit` both run all verifier suites. No credential or live discovery-ref lookup is needed for these tests. The install and pinned Go formatter command above may access the network; they are not offline tests.
 
-The minimum test-coverage policy is one shell test suite for every executable shell source file. Verifier changes require Node fixture tests and must preserve exact REST/GraphQL inventory reconciliation. Changes to supported package-manager behavior must also include a token-backed frozen-lockfile smoke test.
+CI runs the same static and unit checks on every pull request. Existing public/fork secret gates and token-backed GitHub-hosted smoke jobs are independent of the detector. Never add a live organization audit or release snapshot verification to normal source CI.
+
+The minimum test-coverage policy is one shell test suite for every executable shell source file. Verifier changes require synthetic Node fixtures for per-download setup/teardown boundaries, opaque execution, immutable-SHA reads, partial failures and private reporting. Preserve REST/GraphQL token-visible inventory reconciliation without claiming it proves organization-wide completeness. Changes to supported package-manager behavior must also include a token-backed frozen-lockfile smoke test.
+
+## Operator-only commands
+
+`npm run inventory` and `npm run audit:live` are read-only manual commands using an existing authorized `gh` session. Confirm organization-wide read access separately before making organization-wide claims. No scheduling or remediation is implicit. See README for the scan scope and limitations.
+
+Full results are owner-only, ignored `reports/inventory.json` and `reports/live-audit.json`; terminal JSON contains sanitized counts. Audit `scanErrors`/`scanStatus` distinguish operational failures from discovered gaps. Exit 1 includes partial scans; exit 0 can still include `needs-sfw` or `needs-review`. Do not force-add reports, expose inventory/source in logs, or upload full reports as artifacts.
+
+`npm run verify-action` is a separate live, strict historical release snapshot check, not a normal CI check. Advancing `v1` or changing the current release manifest can intentionally invalidate it. Mocked release tests use `tools/rollout/fixtures/release-manifest.txt`, preserving integrity regression tests without binding source CI to future manifest changes. Keep the actual runtime manifest and action-only publication boundaries intact.
 
 ## Pull request guidelines
 

@@ -8,8 +8,8 @@ const DEFAULT_PAGE_SIZE = 100;
 const MAX_REPOSITORY_COUNT = 10_000;
 const MAX_REPOSITORY_PAGES = MAX_REPOSITORY_COUNT / DEFAULT_PAGE_SIZE;
 
-function statusFromText(text) {
-  const match = String(text).match(/\(HTTP ([0-9]{3})\)/);
+export function statusFromText(text) {
+  const match = String(text).match(/\bHTTP ([0-9]{3})(?:\)|:)/);
   return match ? Number(match[1]) : undefined;
 }
 
@@ -139,18 +139,37 @@ export class GitHubClient {
 
   async getText(repository, path, ref) {
     const response = await this.api(
-      `repos/${repository}/contents/${path}?ref=${encodeURIComponent(ref)}`,
+      `repos/${repository}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`,
       `read ${repository}/${path} at ${ref}`,
     );
-    if (response.type !== "file" || response.encoding !== "base64") {
+    const content =
+      typeof response?.content === "string"
+        ? response.content.replaceAll("\n", "")
+        : undefined;
+    if (
+      response?.type !== "file" ||
+      response.encoding !== "base64" ||
+      content === undefined ||
+      !Number.isSafeInteger(response.size) ||
+      response.size < 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+        content,
+      )
+    ) {
       throw new Error(
-        `${repository}/${path} at ${ref} is not a base64 GitHub file response`,
+        `${repository}/${path} at ${ref} is not a complete base64 GitHub file response`,
       );
     }
-    return Buffer.from(
-      response.content.replaceAll("\n", ""),
-      "base64",
-    ).toString("utf8");
+    const bytes = Buffer.from(content, "base64");
+    if (
+      bytes.length !== response.size ||
+      bytes.toString("base64") !== content
+    ) {
+      throw new Error(
+        `${repository}/${path} at ${ref} has incomplete or malformed content`,
+      );
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   }
 
   async listRestRepositories(organization) {

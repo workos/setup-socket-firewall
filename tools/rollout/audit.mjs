@@ -11,7 +11,7 @@ const LOCKFILE_PATTERN =
 const LOCAL_ACTION_PATTERN = /uses:\s*['"]?\.\/([^\s'"#]+)/g;
 const AUDIT_CONCURRENCY = 5;
 const MAX_WORKFLOWS_PER_REPOSITORY = 200;
-const ADVISORY_WORKSPACE_PATTERN = /-ghsa(?:-[a-z0-9]{4}){3}$/;
+const MAX_LOCAL_ACTIONS_PER_REPOSITORY = 200;
 
 function sortedByName(rows) {
   return [...rows].sort((left, right) =>
@@ -57,32 +57,22 @@ export async function auditRepository(client, repository) {
   try {
     const ref = await client.getRef(
       fullName,
-      `heads/${repository.defaultBranch}`,
+      `heads/${encodeURIComponent(repository.defaultBranch)}`,
     );
     headSha = ref?.object?.sha;
-    if (typeof headSha !== "string" || headSha.length !== 40) {
+    if (typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) {
       throw new Error(`unexpected head ref shape for ${fullName}`);
     }
-    tree = await client.getTree(
-      fullName,
-      encodeURIComponent(repository.defaultBranch),
-      true,
-    );
+    tree = await client.getTree(fullName, headSha, true);
   } catch (error) {
+    const status = error.status ?? error.cause?.status;
     if (
-      error.message?.includes("HTTP 404") &&
-      ADVISORY_WORKSPACE_PATTERN.test(repository.name)
+      headSha === undefined &&
+      (status === 404 ||
+        status === 409 ||
+        /HTTP (404|409)/.test(error.message)) &&
+      (await isEmptyRepository(client, fullName))
     ) {
-      return {
-        defaultBranch: repository.defaultBranch,
-        disposition: "advisory-workspace",
-        lockfiles: [],
-        name: repository.name,
-        visibility: repository.visibility,
-        workflows: [],
-      };
-    }
-    if (await isEmptyRepository(client, fullName)) {
       return {
         defaultBranch: repository.defaultBranch,
         disposition: "empty",
@@ -104,11 +94,27 @@ export async function auditRepository(client, repository) {
     };
   }
 
-  if (tree.truncated !== false) {
+  if (
+    tree?.truncated !== false ||
+    !Array.isArray(tree.tree) ||
+    tree.tree.some(
+      (entry) =>
+        !entry ||
+        typeof entry.path !== "string" ||
+        !entry.path ||
+        !["blob", "tree", "commit"].includes(entry.type) ||
+        (entry.type === "blob" &&
+          !["100644", "100755", "120000"].includes(entry.mode)) ||
+        (entry.type === "tree" && entry.mode !== "040000") ||
+        (entry.type === "commit" && entry.mode !== "160000"),
+    ) ||
+    new Set(tree.tree.map((entry) => entry.path)).size !== tree.tree.length
+  ) {
     return {
       defaultBranch: repository.defaultBranch,
       disposition: "audit-error",
-      error: "default-branch tree listing is truncated",
+      error:
+        "default-branch tree listing is malformed, truncated, or contains unsupported file modes",
       headSha,
       lockfiles: [],
       name: repository.name,
@@ -144,31 +150,61 @@ export async function auditRepository(client, repository) {
   }
 
   try {
+    const readSource = async (path) => {
+      if (tree.tree.find((entry) => entry.path === path)?.mode === "120000") {
+        throw new Error("workflow or local action source is a symlink");
+      }
+      return client.getText(fullName, path, headSha);
+    };
     const workflowTexts = await mapWithConcurrency(
       workflowPaths,
       AUDIT_CONCURRENCY,
-      (path) => client.getText(fullName, path, headSha),
+      (path) => readSource(path),
     );
 
+    if (
+      workflowTexts.some((text) => typeof text !== "string" || !text.trim())
+    ) {
+      throw new Error("workflow source read is empty or malformed");
+    }
+    // Fetch only referenced local actions, including nested composites. The set
+    // bounds cycles in fetching; the classifier separately bounds expansion.
+    const localActions = new Map();
+    const pendingTexts = [...workflowTexts];
     const localActionPaths = new Set();
-    for (const text of workflowTexts) {
-      for (const match of text.matchAll(LOCAL_ACTION_PATTERN)) {
-        const base = match[1].replace(/\/+$/, "");
-        for (const candidate of [`${base}/action.yml`, `${base}/action.yaml`]) {
-          if (blobPaths.has(candidate)) {
-            localActionPaths.add(candidate);
+    while (pendingTexts.length > 0) {
+      const paths = [];
+      for (const text of pendingTexts.splice(0)) {
+        for (const match of text.matchAll(LOCAL_ACTION_PATTERN)) {
+          const base = match[1].replace(/\/+$/, "");
+          for (const candidate of [
+            `${base}/action.yml`,
+            `${base}/action.yaml`,
+          ]) {
+            if (blobPaths.has(candidate) && !localActionPaths.has(candidate)) {
+              localActionPaths.add(candidate);
+              paths.push(candidate);
+            }
           }
         }
       }
+      if (localActionPaths.size > MAX_LOCAL_ACTIONS_PER_REPOSITORY) {
+        throw new Error(
+          "too many referenced local actions; refusing unbounded scan",
+        );
+      }
+      await mapWithConcurrency(
+        paths.sort(),
+        AUDIT_CONCURRENCY,
+        async (path) => {
+          const text = await readSource(path);
+          if (typeof text !== "string" || !text.trim())
+            throw new Error("local action source read is empty or malformed");
+          localActions.set(path, text);
+          pendingTexts.push(text);
+        },
+      );
     }
-    const localActions = new Map();
-    await mapWithConcurrency(
-      [...localActionPaths].sort(),
-      AUDIT_CONCURRENCY,
-      async (path) => {
-        localActions.set(path, await client.getText(fullName, path, headSha));
-      },
-    );
 
     const workflows = workflowPaths.map((path, index) =>
       classifyWorkflow(workflowTexts[index], {
@@ -260,6 +296,10 @@ export async function runAudit(client, options = {}) {
       visibility: inventory.visibility,
     },
     organization: ORGANIZATION,
+    scanErrors: dispositions["audit-error"] ?? 0,
+    scanStatus: dispositions["audit-error"] ? "partial" : "complete",
+    coverage:
+      "token-visible repositories only; organization-wide access is an operator prerequisite",
     repositories: rows,
     schemaVersion: 1,
   };

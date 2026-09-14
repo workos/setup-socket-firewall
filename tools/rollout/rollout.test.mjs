@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 
 import {
@@ -16,6 +18,15 @@ import {
 } from "./inventory.mjs";
 import { main } from "./cli.mjs";
 import { parseReleaseManifest, verifyActionRelease } from "./release.mjs";
+
+// Unit tests intentionally use a historical snapshot, not the evolving source
+// manifest or live discovery refs. The manual verifier remains strict.
+function verifyFixtureRelease(options) {
+  return verifyActionRelease({
+    ...options,
+    manifestUrl: new URL("./fixtures/release-manifest.txt", import.meta.url),
+  });
+}
 
 const TREE_SHA = "5cdbe39b0edafee9457767134320d95c61d91a60";
 
@@ -106,7 +117,7 @@ describe("source dependency lockfile", () => {
 
 describe("release verification", () => {
   test("accepts the exact signed action-only release", async () => {
-    const result = await verifyActionRelease({ client: releaseClient() });
+    const result = await verifyFixtureRelease({ client: releaseClient() });
 
     assert.deepEqual(result, {
       branch: RELEASE_BRANCH,
@@ -135,7 +146,7 @@ describe("release verification", () => {
     });
 
     await assert.rejects(
-      verifyActionRelease({ client }),
+      verifyFixtureRelease({ client }),
       /release discovery refs do not match/,
     );
   });
@@ -150,7 +161,7 @@ describe("release verification", () => {
     });
 
     await assert.rejects(
-      verifyActionRelease({ client }),
+      verifyFixtureRelease({ client }),
       /release commit is not GitHub-verified/,
     );
   });
@@ -168,7 +179,7 @@ describe("release verification", () => {
     });
 
     await assert.rejects(
-      verifyActionRelease({ client }),
+      verifyFixtureRelease({ client }),
       /release tree differs from the reviewed manifest/,
     );
   });
@@ -184,7 +195,7 @@ runs:
 `,
     });
 
-    await assert.rejects(verifyActionRelease({ client }), /must execute only/);
+    await assert.rejects(verifyFixtureRelease({ client }), /must execute only/);
   });
 
   test("rejects unsafe manifest paths", () => {
@@ -394,7 +405,10 @@ describe("CLI", () => {
     await assert.rejects(main(["inventory", "--org", "other"], {}), /usage:/);
   });
 
-  test("prints deterministic inventory JSON", async () => {
+  test("prints sanitized inventory JSON and keeps full inventory private", async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "sfw-inventory-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const reportPath = join(directory, "inventory.json");
     let output = "";
     const client = {
       async listGraphqlRepositories() {
@@ -407,6 +421,7 @@ describe("CLI", () => {
 
     await main(["inventory"], {
       client,
+      reportPath,
       output: {
         write(value) {
           output += value;
@@ -415,5 +430,10 @@ describe("CLI", () => {
     });
 
     assert.equal(JSON.parse(output).activeCount, 1);
+    assert.equal(JSON.parse(output).repositories, undefined);
+    assert.equal(
+      JSON.parse(await readFile(reportPath, "utf8")).repositories[0].name,
+      "one",
+    );
   });
 });

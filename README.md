@@ -148,20 +148,51 @@ No maintainer runs local release commands.
 
 The workflow uses only the repository-scoped `GITHUB_TOKEN` with `contents: write`, serializes releases, skips stale successful commits when `main` has advanced, and can be retried through `workflow_dispatch`. A future breaking release must change the reviewed channel to `v2`; it must not repurpose `v1`.
 
-Never publish the normal source commit as an action release: it contains tests and the one-time HELP-724 rollout verifier source.
+Never publish the normal source commit as an action release: it contains tests and the read-only CI gap detector source.
 
-## Rollout verifier
+## Read-only CI gap detector
 
-The source branch contains operator-only verification tooling that never enters the action release. Its foundation validates the signed action tree and independently reconciles REST and GraphQL WorkOS repository inventories:
+The source branch includes an **operator-run candidate detector**, not runtime proof of protection. It never enters the action release and does not change repositories, create PRs, schedule scans, or diagnose general CI health.
 
 ```bash
-npm ci --ignore-scripts
-npm test
-npm run verify-action
-npm run inventory
+npm ci --ignore-scripts --no-audit --no-fund
+npm run check          # offline formatting and mocked Node tests
+npm run inventory     # read-only, token-visible WorkOS inventory
+npm run audit:live     # read-only, default-branch workflow candidate scan
 ```
 
-`inventory` requires an existing `gh` session with `repo` and `read:org`. It is read-only, accepts no configuration flags, and fails unless both inventory sources return exactly the same active repository set. Its output can contain internal repository names; do not attach it to a public issue or workflow log.
+`inventory` and `audit:live` require an existing authenticated `gh` session. Organization-wide conclusions require independently confirmed read access to **every intended repository**, including private/internal repositories (typically `repo` and `read:org`, with organization/SSO authorization as applicable). REST/GraphQL reconciliation checks consistency of the token-visible inventory; both APIs agreeing does **not** prove hidden repositories are absent. Archived repositories are counted but not scanned. Each repository's tree and workflow/local-action source use one captured immutable default-branch SHA; different repositories are not captured transactionally.
+
+### Results and privacy
+
+Terminal output is sanitized JSON counts, not repository names or workflow source. Full inventory and audit JSON go to `reports/inventory.json` and `reports/live-audit.json`, respectively. These paths are ignored; reports are atomically replaced with owner-only (`0600`) permissions. Keep them private: never force-add, publish, or upload reports as CI artifacts. Both commands take no CLI flags; a later run replaces the previous report.
+
+Audit JSON includes `schemaVersion`, `scanStatus`, `scanErrors`, disposition counts, and per-repository `headSha`, workflow/job operations and violations. `scanStatus: complete` means the token-visible scan completed, **not** that all jobs are protected. `partial` means one or more repositories have an `audit-error` row. CLI exit **0** means the scan completed, even when gaps/review candidates were found; exit **1** means an operational failure (including partial scans). Consumers should inspect dispositions separately from the exit code. Fatal inventory/API/command errors emit a sanitized error and exit 1; they do not refresh the report, so check its timestamp before use.
+
+| Repository disposition | Meaning |
+| --- | --- |
+| `needs-sfw` | A recognized download lacks a certain supported setup interval. |
+| `needs-review` | Opaque behavior, reusable call, or malformed workflow prevents a conclusion. |
+| `blocked-trust`, `unsafe-publish`, `blocked-yarn` | Existing trust, teardown/publication, or Yarn compatibility rule needs review. |
+| `protected` | All recognized downloads satisfy the static rules, with no detected opaque operation; not runtime verification. |
+| `audit-error` | A repository read failed or was incomplete; never a clean result. |
+| `no-ci`, `no-js-ci`, `out-of-scope`, `empty` | No recognized in-scope candidate in the inspected source; not an organization-wide assurance. |
+
+Job statuses remain more detailed (`unprotected`, `unknown`, `reusable-call`, etc.). Ambiguous execution produces `needs-review`, with any recognized violations retained in the private report. A separate, clearly unprotected job still makes the repository a `needs-sfw` candidate. A `safe-publish` job is a static publication-only classification, not proof that lifecycle hooks are safe.
+
+### Static limits
+
+The small grammar recognizes direct npm/pnpm/Bun downloads, Yarn blockers, setup/teardown order and registry overrides. Every identified download needs an active approved-SHA setup using the visibility-appropriate token expression. Disabled setup cannot protect; conditional/continue-on-error boundaries, complex shell constructs, containers, unresolved scripts/actions and reusable workflows cannot earn `protected`. Referenced local composites are inspected with bounded nesting and cycle detection; dynamic inputs and inner/outer uncertainty remain review candidates. Public external-fork fallback is an explicit unprotected path, not verified protection.
+
+Only top-level `.github/workflows/*.yml|yaml` and `.depot/workflows/*.yml|yaml` on active repositories' default branches are inspected. The detector does not execute workflows, resolve package scripts/lifecycle hooks, validate credential existence, prove actual registry traffic, interpret arbitrary shell, inspect remote action/reusable-workflow implementations, or certify bespoke controls. Local-action resolution is deliberately limited; unsupported paths or execution contexts need review. Install hooks and downloaded code remain outside the runtime-proof claim. Treat results as a prioritized human-review queue.
+
+### Manual release snapshot verification
+
+```bash
+npm run verify-action
+```
+
+This separate **live, strict snapshot check** validates discovery refs, the approved signed action-only SHA, exact allowlisted tree, and runtime entrypoints against `tools/rollout/constants.mjs` and the local release manifest. It is not part of `npm run check` or ordinary source tests. It is expected to fail when `v1` advances or the source manifest no longer matches that historical snapshot; this alone is not evidence the current release is unsafe. Review/update the snapshot deliberately for a new release, rather than weakening integrity checks. Offline unit tests use an explicit historical manifest fixture so future manifest additions cannot break unrelated source CI.
 
 ## Contributing
 
