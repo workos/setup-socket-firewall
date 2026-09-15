@@ -12,6 +12,9 @@ import {
   SUPPORTED_SHELLS,
 } from "./integration.mjs";
 
+export const PACKAGE_MANAGER_READ = 'require("./package.json").packageManager';
+const PNPM_BOOTSTRAP = `set -euo pipefail\npnpm_package="$(node --print '${PACKAGE_MANAGER_READ}')"\nnpm install --global "$pnpm_package" --ignore-scripts --no-audit --no-fund`;
+
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const LOCAL_TARBALL = /^\$(?:RUNNER_TEMP|\{RUNNER_TEMP\})\/[\w.*-]+\.tgz$/;
 const UNSAFE_PUBLIC_TRIGGERS = new Set([
@@ -784,8 +787,29 @@ export function classifyStep(step, context = {}) {
     )
   )
     return [{ kind: "unknown", sourceError: "malformed-action-input" }];
+  // Resolve only this root-manifest bootstrap, not arbitrary shell variables.
+  // Snapshot evidence does not certify execution of the JSON reader at runtime.
+  const pinnedBootstrap =
+    !context.actionStack?.length &&
+    typeof context.packageManager === "string" &&
+    context.packageManager === context.packageManager.trim() &&
+    /^pnpm@(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(
+      context.packageManager ?? "",
+    ) &&
+    [undefined, ".", "./"].includes(step["working-directory"]) &&
+    typeof step.run === "string" &&
+    step.run
+      .trim()
+      .split("\n")
+      .map((line) => line.trim())
+      .join("\n") === PNPM_BOOTSTRAP;
+  if (pinnedBootstrap)
+    step = {
+      ...step,
+      run: `npm install --global ${context.packageManager} --ignore-scripts --no-audit --no-fund`,
+    };
   let operations;
-  let uncertain = boundaryUncertain(step);
+  let uncertain = boundaryUncertain(step) || pinnedBootstrap;
   let integrationEnv = step.env;
   if (
     typeof step.uses === "string" &&
@@ -1404,20 +1428,37 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
     literalMatrixKeys,
     stepBudget: { remaining: 1000 },
   };
+  let packageManagerSourceUnchanged =
+    defaultCheckout &&
+    [undefined, ".", "./"].includes(job.defaults?.run?.["working-directory"]) &&
+    context.exclusionRootDirectory !== false;
   const operations =
     condition(job.if) === "never"
       ? []
-      : steps.flatMap((step, index) =>
-          classifyStep(
-            step,
-            index > (checkout?.index ?? -1)
-              ? stepContext
-              : { ...stepContext, registryExclusion: undefined },
-          ).map((operation) => ({
+      : steps.flatMap((step, index) => {
+          const afterCheckout = index > (checkout?.index ?? -1);
+          const currentContext = {
+            ...stepContext,
+            registryExclusion: afterCheckout
+              ? stepContext.registryExclusion
+              : undefined,
+            packageManager:
+              afterCheckout && packageManagerSourceUnchanged
+                ? context.packageManager
+                : undefined,
+          };
+          // Earlier shell/local or mutable action execution can replace the file.
+          if (
+            typeof step?.uses !== "string" ||
+            step.uses.startsWith("./") ||
+            !FULL_SHA_PATTERN.test(step.uses.split("@")[1] ?? "")
+          )
+            packageManagerSourceUnchanged = false;
+          return classifyStep(step, currentContext).map((operation) => ({
             ...operation,
             step: index + 1,
-          })),
-        );
+          }));
+        });
   if (
     !Array.isArray(job.steps) ||
     steps.length === 0 ||

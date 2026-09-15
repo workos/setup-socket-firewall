@@ -1,7 +1,11 @@
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { classifyWorkflow, repositoryDisposition } from "./classify.mjs";
+import {
+  classifyWorkflow,
+  PACKAGE_MANAGER_READ,
+  repositoryDisposition,
+} from "./classify.mjs";
 import { captureRepositoryInventory } from "./inventory.mjs";
 import { ORGANIZATION } from "./constants.mjs";
 import { readRegistryExclusions } from "./exclusions.mjs";
@@ -213,6 +217,14 @@ export async function auditRepository(client, repository) {
       );
     }
 
+    // Read the value at the captured SHA only when this exact idiom occurs.
+    // A project npmrc or an absent manifest leaves the dynamic install unresolved.
+    const packageManager =
+      blobPaths.has("package.json") &&
+      !blobPaths.has(".npmrc") &&
+      workflowTexts.some((text) => text.includes(PACKAGE_MANAGER_READ))
+        ? JSON.parse(await readSource("package.json"))?.packageManager
+        : undefined;
     const exclusions = await readRegistryExclusions(
       repository.name,
       readSource,
@@ -221,6 +233,7 @@ export async function auditRepository(client, repository) {
       workflowPaths.map((path, index) =>
         classifyWorkflow(workflowTexts[index], {
           localActions,
+          packageManager,
           path,
           registryExclusion: exclusions.find(
             (entry) =>
