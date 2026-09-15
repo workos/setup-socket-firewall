@@ -587,6 +587,7 @@ test("direct executor target arguments are not installer configuration", () => {
   for (const run of [
     "npx wrangler deploy --env production",
     "npx -y wrangler deploy --env production",
+    "npx --package=tool tool",
     "bunx biome check --write",
     "npx tool --registry=https://example.invalid",
     "npx tool --env $ENVIRONMENT",
@@ -607,7 +608,7 @@ test("direct executor target arguments are not installer configuration", () => {
   }
   for (const run of [
     "npx --future-option tool",
-    "npx --package=tool tool",
+    "npx --package=$PACKAGE tool",
     "npx $TOOL --env production",
     "npx",
     "npm exec tool -- --env production",

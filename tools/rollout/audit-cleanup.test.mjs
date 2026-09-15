@@ -16,6 +16,173 @@ const context = { visibility: "private", path: ".github/workflows/ci.yml" };
 const inspect = (steps, extra = {}) =>
   classifyJob("build", { steps, ...extra }, context, ["push"]);
 
+test("matching immutable output guards cover only the same guarded installs", () => {
+  const ready = { id: "ready", run: 'echo enabled=true >> "$GITHUB_OUTPUT"' };
+  for (const guard of [
+    "steps.ready.outputs.enabled == 'true'",
+    "needs.prepare.outputs.enabled == 'true'",
+  ]) {
+    const guardedSetup = { ...setup, if: guard };
+    const install = { run: "npm ci", if: `\${{ ${guard} }}` };
+    const result = inspect([ready, guardedSetup, install]);
+    assert.equal(result.integration.disposition, "integrated");
+    assert.equal(result.status, "unknown");
+    assert.equal(
+      inspect([ready, guardedSetup, { run: "npm ci" }]).integration.disposition,
+      "needs-review",
+    );
+    assert.equal(
+      inspect([
+        ready,
+        guardedSetup,
+        { ...install, if: guard.replace("'true'", "'false'") },
+      ]).integration.disposition,
+      "needs-review",
+    );
+    assert.equal(
+      inspect([ready, { ...guardedSetup, "continue-on-error": true }, install])
+        .integration.disposition,
+      "needs-review",
+    );
+    assert.equal(
+      inspect([ready, { ...guardedSetup, env: { HOME: "/other" } }, install])
+        .integration.disposition,
+      "needs-review",
+    );
+    assert.equal(
+      inspect([
+        ready,
+        guardedSetup,
+        {
+          uses: `workos/setup-socket-firewall/teardown@${APPROVED_RELEASE_SHA}`,
+        },
+        install,
+      ]).integration.disposition,
+      "needs-sfw",
+    );
+  }
+  const guardedSetup = {
+    ...setup,
+    if: "steps.ready.outputs.enabled == 'true'",
+  };
+  const install = { run: "npm ci", if: guardedSetup.if };
+  for (const steps of [
+    [guardedSetup, ready, install],
+    [ready, guardedSetup, ready, install],
+    [
+      ready,
+      guardedSetup,
+      { ...install, if: "steps.ready.outputs.enabled == 't r u e'" },
+    ],
+  ])
+    assert.equal(inspect(steps).integration.disposition, "needs-review");
+  for (const guard of [
+    "env.ENABLED == 'true'",
+    "always()",
+    "steps.ready.outputs.enabled == 't r u e'",
+  ]) {
+    assert.equal(
+      inspect([ready, { ...setup, if: guard }, { ...install, if: guard }])
+        .integration.disposition,
+      "needs-review",
+    );
+  }
+});
+
+test("literal npm workspaces preserve command classification and teardown gaps", () => {
+  const teardown = {
+    uses: `${setup.uses.split("@")[0]}/teardown@${APPROVED_RELEASE_SHA}`,
+  };
+  for (const selector of [
+    "-w apps/research",
+    "--workspace apps/research",
+    "--workspace=apps/research",
+  ]) {
+    const script = { run: `npm ${selector} run build` };
+    assert.equal(inspect([script]).integration.disposition, "no-js-ci");
+    assert.equal(inspect([script]).status, "unknown");
+    for (const verb of ["ci", "exec -- wrangler --env production"]) {
+      const install = { run: `npm ${selector} ${verb}` };
+      assert.equal(
+        inspect([setup, install]).integration.disposition,
+        "integrated",
+      );
+      assert.equal(inspect([install]).integration.disposition, "needs-sfw");
+      assert.equal(
+        inspect([setup, teardown, install]).integration.disposition,
+        "needs-sfw",
+      );
+    }
+  }
+  for (const run of [
+    "npm -w $APP run build",
+    "npm -w apps/${{ matrix.app }} run build",
+    "npm -w ../outside ci",
+    "npm -w --userconfig ci",
+    "npm -w apps/research --userconfig other ci",
+    "npm -w apps/research exec wrangler",
+  ])
+    assert.notEqual(
+      inspect([setup, { run }]).integration.disposition,
+      "integrated",
+      run,
+    );
+  assert.equal(
+    inspect([
+      setup,
+      { run: "npm -w apps/research ci --registry=https://example.invalid" },
+    ]).integration.disposition,
+    "needs-sfw",
+  );
+});
+
+test("literal npx package selectors retain all download and configuration boundaries", () => {
+  for (const run of [
+    "npx --yes --package renovate@43.257.6 renovate-config-validator --strict default.json",
+    "npx -p @scope/tool@1.2.3 tool --env $ENVIRONMENT",
+    "npx --package=tool --package=other tool --registry=https://payload.invalid",
+    "npm exec -- wrangler --env $ENVIRONMENT",
+  ]) {
+    const result = inspect([setup, { run }]);
+    assert.equal(result.integration.disposition, "integrated", run);
+    assert.equal(result.status, "unknown", run);
+    assert.equal(inspect([{ run }]).integration.disposition, "needs-sfw", run);
+  }
+  for (const run of [
+    "npx --package=$PACKAGE tool",
+    "npx --package $RUNNER_TEMP/tool.tgz tool",
+    "npx --package=https://example.invalid/tool.tgz tool",
+    "npx --package tool",
+    "bunx --package tool tool",
+    "npm exec -- $TOOL",
+    "npm exec -- https://example.invalid/tool.tgz",
+  ])
+    assert.equal(
+      inspect([setup, { run }]).integration.disposition,
+      "needs-review",
+      run,
+    );
+  assert.equal(
+    inspect([setup, { run: "npx --package --userconfig tool" }]).integration
+      .disposition,
+    "needs-sfw",
+  );
+  assert.equal(
+    inspect([
+      setup,
+      { run: "npx --package tool --registry=https://example.invalid tool" },
+    ]).integration.disposition,
+    "needs-sfw",
+  );
+  assert.equal(
+    inspect([
+      setup,
+      { run: "npm exec --registry=https://example.invalid -- tool" },
+    ]).integration.disposition,
+    "needs-sfw",
+  );
+});
+
 test("literal install options preserve configuration, not execution assurance", () => {
   for (const run of [
     "npm ci --include=optional",

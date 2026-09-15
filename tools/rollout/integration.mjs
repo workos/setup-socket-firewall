@@ -106,6 +106,32 @@ function contextUncertain(job, context) {
   );
 }
 
+// Only boolean-string output comparisons are modeled. Step outputs must belong
+// to one completed earlier step, never a future/duplicate ID or mutable env.
+function stableOutputGuard(value, job, step) {
+  if (typeof value !== "string") return undefined;
+  const text = value
+    .trim()
+    .replace(/^\$\{\{([\s\S]*)\}\}$/, "$1")
+    .trim();
+  const match = text.match(
+    /^(steps|needs)\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*(['"])(true|false)\4$/,
+  );
+  if (!match) return undefined;
+  if (match[1] === "steps") {
+    const indexes = job.steps.flatMap((item, index) =>
+      item?.id === match[2] ? [index] : [],
+    );
+    if (
+      indexes.length !== 1 ||
+      !Number.isInteger(step) ||
+      indexes[0] >= step - 1
+    )
+      return undefined;
+  }
+  return `${match[1]}.${match[2]}.outputs.${match[3]}==${match[5]}`;
+}
+
 export function observedIntegration(operations, job, context) {
   const downloads = [];
   const additionalJsPaths = [];
@@ -133,8 +159,18 @@ export function observedIntegration(operations, job, context) {
       operation.integrationConfigurationUncertain ??
       operation.integrationUncertain ??
       operation.uncertain;
-    const currentState =
+    const observedState =
       operation.manager === "bun" && bunState ? bunState : state;
+    const currentState =
+      observedState?.guard &&
+      observedState.guard !==
+        stableOutputGuard(
+          job.steps?.[operation.step - 1]?.if,
+          job,
+          operation.step,
+        )
+        ? { status: "unresolved", reason: "unmatched-setup-condition" }
+        : observedState;
     const validInterval = ["covered", "fork-exception"].includes(
       currentState?.status,
     );
@@ -162,8 +198,12 @@ export function observedIntegration(operations, job, context) {
         context.visibility === "public" &&
         (operation.fallback === "true" ||
           /^\$\{\{.+\}\}$/.test(operation.fallback));
+      const guard =
+        !operation.via && !operation.boundaryUncertainWithoutCondition
+          ? stableOutputGuard(operation.condition, job, operation.step)
+          : undefined;
       if (
-        uncertain ||
+        (uncertain && !guard) ||
         (!publicForkFallback && !["false", "true"].includes(operation.fallback))
       ) {
         state = {
@@ -184,6 +224,7 @@ export function observedIntegration(operations, job, context) {
         state = {
           status: publicForkFallback ? "fork-exception" : "covered",
           reason: "approved-setup-interval",
+          ...(guard ? { guard } : {}),
         };
       }
       continue;

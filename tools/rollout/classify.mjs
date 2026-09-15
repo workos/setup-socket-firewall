@@ -174,11 +174,23 @@ function commandParts(command) {
     start += 1;
     assignments(true);
   }
-  return {
-    words: words.slice(start),
-    rawWords: tokens.commands.slice(start),
-    environment,
-  };
+  const args = words.slice(start);
+  const rawArgs = tokens.commands.slice(start);
+  // A literal workspace selector changes the package, not the npm command.
+  // Leave dynamic/escaping selectors and other leading options unresolved.
+  while (args[0] === "npm") {
+    const separate = ["-w", "--workspace"].includes(args[1]);
+    const value = separate
+      ? args[2]
+      : args[1]?.startsWith("--workspace=")
+        ? args[1].slice(12)
+        : undefined;
+    if (!literalWorkingDirectory(value) || value.startsWith("-")) break;
+    const count = separate ? 2 : 1;
+    args.splice(1, count);
+    rawArgs.splice(1, count);
+  }
+  return { words: args, rawWords: rawArgs, environment };
 }
 
 function commandWords(command) {
@@ -307,9 +319,33 @@ function approvedBunArguments(words, rawWords) {
 }
 
 function directExecutor(words) {
+  const packageName = /^(?:@[\w.-]+\/)?[A-Za-z0-9_][\w.-]*(?:@[\w.^~*+-]+)?$/;
+  if (words[0] === "npm") {
+    // npm parses options after the command too, unless an explicit -- ends them.
+    return ["exec", "x"].includes(words[1]) &&
+      words[2] === "--" &&
+      packageName.test(words[3] ?? "")
+      ? words.slice(0, 3).join(" ")
+      : undefined;
+  }
   if (!["npx", "bunx"].includes(words[0])) return undefined;
   let target = 1;
-  while (["-y", "--yes"].includes(words[target])) target += 1;
+  while (target < words.length) {
+    if (["-y", "--yes"].includes(words[target])) target += 1;
+    else if (
+      words[0] === "npx" &&
+      ["-p", "--package"].includes(words[target]) &&
+      packageName.test(words[target + 1] ?? "")
+    )
+      target += 2;
+    else if (
+      words[0] === "npx" &&
+      words[target].startsWith("--package=") &&
+      packageName.test(words[target].slice(10))
+    )
+      target += 1;
+    else break;
+  }
   // Installer options end at the literal package/binary target. Arguments to
   // that program are payload, not npx/bunx registry configuration.
   if (!/^[A-Za-z0-9_@][A-Za-z0-9_@./:+-]*$/.test(words[target] ?? ""))
@@ -874,7 +910,10 @@ export function classifyStep(step, context = {}) {
         (configFileWrite && !knownRegistryContent) ||
         nestedOverride ||
         dynamicSetter;
-      if (["npx", "bunx"].includes(words[0])) {
+      if (
+        ["npx", "bunx"].includes(words[0]) ||
+        (words[0] === "npm" && ["exec", "x"].includes(words[1]))
+      ) {
         // Strict assurance still sees unknown executor code/configuration flags.
         operation.uncertain = true;
         operation.integrationExecutor = executorPrefix !== undefined;
