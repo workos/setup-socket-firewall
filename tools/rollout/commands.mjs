@@ -5,6 +5,8 @@ function lex(source, words = false) {
   const substitutions = [];
   const groups = [];
   const backticks = [];
+  const heredocs = [];
+  let heredocError = false;
   let command = "";
   let quote;
   let escaped = false;
@@ -12,10 +14,15 @@ function lex(source, words = false) {
   let limit = false;
   let ambiguous = /<<|^\s*(?:function\s|[\w-]+\s*\(\s*\)\s*\{)/m.test(source);
   const flush = () => {
-    if (command.trim()) commands.push(command.trim());
+    if (command.trim()) {
+      if (commands.length < 1000) commands.push(command.trim());
+      else limit = true;
+    }
     command = "";
   };
   const capture = (text) => {
+    // Word analysis bounds substitutions per command, not across unrelated reads.
+    if (!words) return;
     if (substitutions.length < 20) substitutions.push(text);
     else limit = true;
   };
@@ -58,6 +65,42 @@ function lex(source, words = false) {
       command += `$${open}`;
       index += 1;
       continue;
+    }
+    if (char === "\n" && !quote && heredocs.length) {
+      let cursor = index + 1;
+      for (const { delimiter, tabs } of heredocs.splice(0)) {
+        const start = cursor;
+        let found = false;
+        while (cursor < source.length) {
+          const end = source.indexOf("\n", cursor);
+          const lineEnd = end === -1 ? source.length : end;
+          const line = source.slice(cursor, lineEnd);
+          if ((tabs ? line.replace(/^\t+/, "") : line) === delimiter) {
+            heredocError ||= source.slice(start, cursor).includes("${{");
+            cursor = lineEnd;
+            found = true;
+            break;
+          }
+          cursor = lineEnd + 1;
+        }
+        heredocError ||= !found;
+        if (!words || groups.length) command += `\n${delimiter}`;
+      }
+      index = cursor - 1;
+      continue;
+    }
+    if (!quote && char === "<" && source[index - 1] !== "<") {
+      // Only literal cat data, not a heredoc executed by bash/sh or a pipeline.
+      const match = source
+        .slice(index)
+        .match(/^<<(-?)[ \t]*(['"])([A-Za-z_][A-Za-z0-9_]*)\2[ \t]*(?=\n|$)/);
+      if (
+        match &&
+        /(?:^|\$\()cat(?:[ \t]+>{1,2}[ \t]+[\w./-]+)?[ \t]*$/.test(
+          words ? source.slice(0, index) : command,
+        )
+      )
+        heredocs.push({ delimiter: match[3], tabs: match[1] === "-" });
     }
     if (quote) {
       command += char;
@@ -110,7 +153,9 @@ function lex(source, words = false) {
   }
   if (escaped) command += "\\";
   flush();
-  const lexError = Boolean(quote || groups.length || escaped);
+  const lexError = Boolean(
+    quote || groups.length || escaped || heredocError || heredocs.length,
+  );
   return {
     commands,
     substitutions,

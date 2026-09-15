@@ -164,7 +164,7 @@ test("lexical boundaries do not turn quoted data into installs", () => {
     ['VALUE="$(node --print \'require("./package.json").name\')"', "npm ci"],
   );
   assert.equal(shellCommands("cat <<'EOF'\nnpm ci\nEOF").ambiguous, true);
-  assert.equal(primary([{ run: "cat <<'EOF'\nnpm ci\nEOF" }]), "needs-review");
+  assert.equal(primary([{ run: "cat <<'EOF'\nnpm ci\nEOF" }]), "no-js-ci");
 });
 
 test("unparsed explicit JS invocation retains setup evidence, not execution assurance", () => {

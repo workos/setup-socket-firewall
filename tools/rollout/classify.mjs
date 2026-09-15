@@ -571,6 +571,51 @@ function parseUses(uses) {
   };
 }
 
+// Local uses paths are workspace-relative, not relative to the action file.
+// Only a checkout selecting this captured source may remap a literal mount.
+export function resolveLocalActionSource(path, context = {}) {
+  for (const step of [...(context.checkouts ?? [])].reverse()) {
+    if (condition(step.if) === "never") continue;
+    const input = step.with ?? {};
+    if (!isMapping(input)) return { sourceError: "unresolved-checkout-source" };
+    const mount = input.path ?? ".";
+    if (!literalWorkingDirectory(mount))
+      return { sourceError: "unresolved-checkout-path" };
+    const prefix = mount.replace(/^\.\//, "").replace(/\/$/, "");
+    const root = prefix === "." || prefix === "";
+    if (!root && path !== prefix && !path.startsWith(`${prefix}/`)) continue;
+    const repository = input.repository;
+    const ref = input.ref;
+    const sameRepository =
+      repository === undefined ||
+      repository === context.repository ||
+      normalizeExpression(repository) === "${{github.repository}}";
+    const sameRef =
+      ref === undefined ||
+      ref === "" ||
+      (context.headSha !== undefined && ref === context.headSha) ||
+      normalizeExpression(ref) === "${{github.sha}}";
+    if (
+      !sameRepository ||
+      !sameRef ||
+      condition(step.if) !== "always" ||
+      condition(step["continue-on-error"] ?? false) !== "never" ||
+      input["sparse-checkout"] !== undefined ||
+      step.env !== undefined
+    )
+      return {
+        sourceError: "unresolved-checkout-source",
+        checkoutRepository: repository ?? context.repository,
+        checkoutRef: ref,
+      };
+    return {
+      path: root ? path : path.slice(prefix.length).replace(/^\//, ""),
+      checkedOut: true,
+    };
+  }
+  return { path };
+}
+
 // Bind only whole-value composite input references; never evaluate expressions
 // or interpolate shell text. This preserves caller token names through helpers.
 function bindInputs(value, inputs) {
@@ -605,6 +650,28 @@ function classifyUsesStep(step, context) {
   const withInput = step.with ?? {};
 
   if (uses.kind === "local") {
+    const source = resolveLocalActionSource(uses.path, context);
+    if (source.sourceError)
+      return [{ kind: "unknown-local-action", uses: step.uses, ...source }];
+    if (
+      context.localSfwRelease &&
+      source.checkedOut &&
+      ["", "teardown"].includes(source.path)
+    ) {
+      return classifyUsesStep(
+        {
+          ...step,
+          uses: `${ACTION_REPOSITORY}${source.path ? "/teardown" : ""}@${APPROVED_RELEASE_SHA}`,
+        },
+        context,
+      ).map((operation) => ({
+        ...operation,
+        uses: step.uses,
+        localRuntimeVerified: true,
+        uncertain: true,
+        integrationConfigurationUncertain: false,
+      }));
+    }
     const stack = context.actionStack ?? [];
     if (stack.includes(uses.path) || stack.length >= 20) {
       return [
@@ -616,7 +683,7 @@ function classifyUsesStep(step, context) {
         },
       ];
     }
-    const prefix = uses.path ? `${uses.path}/` : "";
+    const prefix = source.path ? `${source.path}/` : "";
     const actionText =
       context.localActions?.get(`${prefix}action.yml`) ??
       context.localActions?.get(`${prefix}action.yaml`);
@@ -808,6 +875,25 @@ export function classifyStep(step, context = {}) {
       ...step,
       run: `npm install --global ${context.packageManager} --ignore-scripts --no-audit --no-fund`,
     };
+  const lines =
+    typeof step.run === "string"
+      ? step.run
+          .trim()
+          .split("\n")
+          .map((line) => line.trim())
+      : [];
+  const offlineBun =
+    !context.actionStack?.length &&
+    context.offlineBunAllowed !== false &&
+    !environmentUncertain(step.env) &&
+    (step.shell === undefined || SUPPORTED_SHELLS.has(step.shell)) &&
+    lines[0] ===
+      "if ! bun install --help | grep -F -- '--offline ' >/dev/null; then" &&
+    /^echo '[^'\r\n$`\\]*' >&2$/.test(lines[1] ?? "") &&
+    lines[2] === "exit 1" &&
+    lines[3] === "fi" &&
+    lines[4] ===
+      "bun install --lockfile-only --offline --ignore-scripts --registry=https://registry.npmjs.org/";
   let operations;
   let uncertain = boundaryUncertain(step) || pinnedBootstrap;
   let integrationEnv = step.env;
@@ -866,12 +952,24 @@ export function classifyStep(step, context = {}) {
       shell.commands.some((command) =>
         /^(?:if|case|for|while|until|select)\b/.test(command),
       );
+    let offlineCommandPending = offlineBun;
     operations = shell.commands.map((command) => {
-      const operation = classifyCommand(command, context);
+      const offlineValidation = offlineCommandPending && command === lines[4];
+      if (offlineValidation) offlineCommandPending = false;
+      const operation = offlineValidation
+        ? {
+            command,
+            kind: "no-network",
+            offlineValidation: true,
+            uncertain: true,
+          }
+        : classifyCommand(command, context);
       const { words, rawWords, environment, preservedEnvironment } =
         commandParts(command, context);
       const bunArguments = approvedBunArguments(words, rawWords);
       const tokens = shellTokens(command);
+      if (tokens.limit || tokens.lexError)
+        operation.sourceError = "unresolved-shell-source";
       const nestedCommands = tokens.substitutions.flatMap(
         (body) => shellCommands(body).commands,
       );
@@ -926,15 +1024,16 @@ export function classifyStep(step, context = {}) {
           installerArguments(args).some((word) => REGISTRY_FLAG.test(word)),
       );
       const registryMutating =
-        setter ||
-        dynamicSetter ||
-        configFileWrite ||
-        nestedOverride ||
-        (["npm", "pnpm", "bun", "yarn", "npx", "bunx"].includes(words[0]) &&
-          configurationWords.some((word) => REGISTRY_FLAG.test(word))) ||
-        Object.keys(environment).some((key) =>
-          /^(?:npm|pnpm|bun)_CONFIG_/i.test(key),
-        );
+        !offlineValidation &&
+        (setter ||
+          dynamicSetter ||
+          configFileWrite ||
+          nestedOverride ||
+          (["npm", "pnpm", "bun", "yarn", "npx", "bunx"].includes(words[0]) &&
+            configurationWords.some((word) => REGISTRY_FLAG.test(word))) ||
+          Object.keys(environment).some((key) =>
+            /^(?:npm|pnpm|bun)_CONFIG_/i.test(key),
+          ));
       // A literal npm prefix selects the project directory, just like a
       // run-step working-directory. Do not accept dynamic or escaping paths.
       const directoryArguments = new Set();
@@ -1419,6 +1518,11 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
     );
   const stepContext = {
     ...context,
+    offlineBunAllowed:
+      !environmentUncertain(job.env) &&
+      !defaultsUncertain(job.defaults) &&
+      !context.integrationContextUncertain &&
+      job.container === undefined,
     registryExclusion:
       defaultCheckout &&
       context.exclusionRootDirectory !== false &&
@@ -1432,13 +1536,20 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
     defaultCheckout &&
     [undefined, ".", "./"].includes(job.defaults?.run?.["working-directory"]) &&
     context.exclusionRootDirectory !== false;
+  const priorCheckouts = [];
   const operations =
     condition(job.if) === "never"
       ? []
       : steps.flatMap((step, index) => {
           const afterCheckout = index > (checkout?.index ?? -1);
+          if (
+            typeof step?.uses === "string" &&
+            step.uses.startsWith("actions/checkout@")
+          )
+            priorCheckouts.push(step);
           const currentContext = {
             ...stepContext,
+            checkouts: priorCheckouts,
             registryExclusion: afterCheckout
               ? stepContext.registryExclusion
               : undefined,

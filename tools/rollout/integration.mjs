@@ -58,7 +58,12 @@ export function defaultsUncertain(defaults) {
 
 export function certainTeardown(operation, setup) {
   if (operation.ref !== APPROVED_RELEASE_SHA) return false;
-  if (!operation.uncertain) return true;
+  if (
+    !operation.uncertain ||
+    (operation.localRuntimeVerified &&
+      operation.integrationConfigurationUncertain === false)
+  )
+    return true;
   if (operation.via || operation.boundaryUncertainWithoutCondition)
     return false;
   const guard = expression(operation.condition);
@@ -208,6 +213,8 @@ export function observedIntegration(operations, job, context) {
         : operation.corepack === "enable"
           ? "enabled"
           : "disabled";
+    if (operation.localRuntimeVerified)
+      notes.add("local-runtime-matches-approved-release");
     if (operation.kind === "sfw-setup") {
       setup = operation;
       if (operation.configureBun === "true") bunState = undefined;
@@ -333,6 +340,8 @@ export function observedIntegration(operations, job, context) {
         setup = undefined;
       }
     }
+    if (operation.offlineValidation)
+      notes.add("capability-guarded-offline-validation");
     const unknown = operation.kind.startsWith("unknown");
     if (unknown || uncertain)
       notes.add(

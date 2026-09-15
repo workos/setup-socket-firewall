@@ -5,9 +5,11 @@ import {
   classifyWorkflow,
   PACKAGE_MANAGER_READ,
   repositoryDisposition,
+  resolveLocalActionSource,
 } from "./classify.mjs";
+import { parseYamlSource } from "./yaml.mjs";
 import { captureRepositoryInventory } from "./inventory.mjs";
-import { ORGANIZATION } from "./constants.mjs";
+import { APPROVED_RUNTIME_BLOBS, ORGANIZATION } from "./constants.mjs";
 import { readRegistryExclusions } from "./exclusions.mjs";
 import {
   integrationDisposition,
@@ -180,6 +182,50 @@ export async function auditRepository(client, repository) {
     // Fetch only referenced local actions, including nested composites. The set
     // bounds cycles in fetching; the classifier separately bounds expansion.
     const localActions = new Map();
+    const sourceContext = {
+      repository: fullName,
+      headSha,
+      localSfwRelease: Object.entries(APPROVED_RUNTIME_BLOBS).every(
+        ([path, sha]) =>
+          tree.tree.some(
+            (entry) =>
+              entry.path === path &&
+              entry.sha === sha &&
+              entry.type === "blob" &&
+              ["100644", "100755"].includes(entry.mode),
+          ),
+      ),
+    };
+    const mounts = new Set([""]);
+    for (const text of workflowTexts) {
+      let parsed;
+      try {
+        parsed = parseYamlSource(text);
+      } catch {
+        continue;
+      } // Classification reports malformed YAML.
+      for (const job of Object.values(parsed?.jobs ?? {})) {
+        for (const step of Array.isArray(job?.steps) ? job.steps : []) {
+          if (
+            !step?.uses?.startsWith?.("actions/checkout@") ||
+            typeof step.with?.path !== "string"
+          )
+            continue;
+          const prefix = step.with.path
+            .replace(/^\.\//, "")
+            .replace(/\/+$/, "");
+          const resolved = resolveLocalActionSource(
+            `${prefix}/action-placeholder`,
+            { ...sourceContext, checkouts: [step] },
+          );
+          if (resolved.path === "action-placeholder") mounts.add(`${prefix}/`);
+        }
+      }
+    }
+    if (mounts.size > MAX_LOCAL_ACTIONS_PER_REPOSITORY)
+      throw new Error(
+        "too many checkout mounts; refusing unbounded source lookup",
+      );
     const pendingTexts = [...workflowTexts];
     const localActionPaths = new Set();
     while (pendingTexts.length > 0) {
@@ -188,10 +234,13 @@ export async function auditRepository(client, repository) {
         for (const match of text.matchAll(LOCAL_ACTION_PATTERN)) {
           const base = match[1].replace(/\/+$/, "");
           const prefix = base ? `${base}/` : "";
-          for (const candidate of [
-            `${prefix}action.yml`,
-            `${prefix}action.yaml`,
-          ]) {
+          const candidates = [...mounts]
+            .filter((mount) => prefix.startsWith(mount))
+            .flatMap((mount) => [
+              `${prefix.slice(mount.length)}action.yml`,
+              `${prefix.slice(mount.length)}action.yaml`,
+            ]);
+          for (const candidate of candidates) {
             if (blobPaths.has(candidate) && !localActionPaths.has(candidate)) {
               localActionPaths.add(candidate);
               paths.push(candidate);
@@ -232,6 +281,7 @@ export async function auditRepository(client, repository) {
     const workflows = resolveLocalWorkflowCalls(
       workflowPaths.map((path, index) =>
         classifyWorkflow(workflowTexts[index], {
+          ...sourceContext,
           localActions,
           packageManager,
           path,
