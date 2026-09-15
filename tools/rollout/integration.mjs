@@ -111,14 +111,24 @@ function contextUncertain(job, context) {
   );
 }
 
-// Only boolean-string output comparisons are modeled. Step outputs must belong
-// to one completed earlier step, never a future/duplicate ID or mutable env.
-function stableOutputGuard(value, job, step) {
+// Stable output/event comparisons only. Step outputs must belong to one
+// completed earlier step, never a future/duplicate ID or mutable env.
+function stableGuard(value, job, step) {
   if (typeof value !== "string") return undefined;
   const text = value
     .trim()
     .replace(/^\$\{\{([\s\S]*)\}\}$/, "$1")
     .trim();
+  if (/\$\{\{|\}\}/.test(text)) return undefined;
+  const terms = text.split(/\s*&&\s*/);
+  // ponytail: two conjuncts cover observed workflows; no general expression evaluator.
+  if (terms.length > 2) return undefined;
+  if (terms.length === 2) {
+    const guards = terms.map((term) => stableGuard(term, job, step));
+    return guards.every(Boolean) ? guards.sort().join("&&") : undefined;
+  }
+  const event = text.match(/^github\.event_name\s*==\s*(['"])([a-z_]+)\1$/);
+  if (event) return `github.event_name==${event[2]}`;
   const match = text.match(
     /^(steps|needs)\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*(['"])(true|false)\4$/,
   );
@@ -166,14 +176,18 @@ export function observedIntegration(operations, job, context) {
       operation.uncertain;
     const observedState =
       operation.manager === "bun" && bunState ? bunState : state;
+    const operationGuard =
+      observedState?.guard &&
+      stableGuard(
+        job.steps?.[operation.step - 1]?.if,
+        job,
+        operation.step,
+      )?.split("&&");
     const currentState =
       observedState?.guard &&
-      observedState.guard !==
-        stableOutputGuard(
-          job.steps?.[operation.step - 1]?.if,
-          job,
-          operation.step,
-        )
+      !observedState.guard
+        .split("&&")
+        .every((term) => operationGuard?.includes(term))
         ? { status: "unresolved", reason: "unmatched-setup-condition" }
         : observedState;
     const validInterval = ["covered", "fork-exception"].includes(
@@ -205,7 +219,7 @@ export function observedIntegration(operations, job, context) {
           /^\$\{\{.+\}\}$/.test(operation.fallback));
       const guard =
         !operation.via && !operation.boundaryUncertainWithoutCondition
-          ? stableOutputGuard(operation.condition, job, operation.step)
+          ? stableGuard(operation.condition, job, operation.step)
           : undefined;
       if (
         (uncertain && !guard) ||

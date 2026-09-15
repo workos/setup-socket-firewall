@@ -227,6 +227,53 @@ test("matching immutable output guards cover only the same guarded installs", ()
   }
 });
 
+test("a stricter stable conjunction implies setup, never the reverse", () => {
+  const ready = { id: "ready", run: 'echo enabled=true >> "$GITHUB_OUTPUT"' };
+  const output = "steps.ready.outputs.enabled == 'true'";
+  const event = "github.event_name == 'pull_request'";
+  const check = (setupGuard, installGuard, steps = [ready]) =>
+    inspect([
+      ...steps,
+      { ...setup, if: setupGuard },
+      { run: "npx tool", if: installGuard },
+    ]);
+  for (const guard of [`${output} && ${event}`, `${event} && ${output}`]) {
+    const result = check(output, `\${{ ${guard} }}`);
+    assert.equal(result.integration.disposition, "integrated");
+    assert.equal(result.status, "unknown");
+    assert.equal(check(guard, output).integration.disposition, "needs-review");
+    assert.equal(check(guard, guard).integration.disposition, "integrated");
+    assert.equal(
+      check(output, guard, [ready, ready]).integration.disposition,
+      "needs-review",
+    );
+    assert.equal(
+      check(output, guard, []).integration.disposition,
+      "needs-review",
+    );
+  }
+  for (const guard of [
+    `${output} || ${event}`,
+    `\${{ ${output} }} && ${event}`,
+    `${event} && \${{ ${output} }}`,
+    `${output} && always()`,
+    `${output} && env.ENABLED == 'true'`,
+    `${output} && (${event})`,
+    `${output} && ${event} && needs.other.outputs.ok == 'true'`,
+    `${output.replace("'true'", "'false'")} && ${event}`,
+  ])
+    assert.equal(
+      check(output, guard).integration.disposition,
+      "needs-review",
+      guard,
+    );
+  assert.equal(
+    check(`${output} && ${event}`, `${output} && github.event_name == 'push'`)
+      .integration.disposition,
+    "needs-review",
+  );
+});
+
 test("literal npm workspaces preserve command classification and teardown gaps", () => {
   const teardown = {
     uses: `${setup.uses.split("@")[0]}/teardown@${APPROVED_RELEASE_SHA}`,
