@@ -9,6 +9,8 @@
   },
   "scripts": {
     "audit:live": "node tools/rollout/cli.mjs audit",
+    "review": "node tools/rollout/review-cli.mjs",
+    "review:weekly": "node tools/rollout/review-cli.mjs run",
     "check": "npm run format:check && npm test",
     "format": "prettier --write package.json tools/rollout/*.mjs",
     "format:check": "prettier --check package.json tools/rollout/*.mjs",

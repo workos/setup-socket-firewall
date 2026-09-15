@@ -210,6 +210,53 @@ npm run audit:live     # read-only, default-branch workflow candidate scan
 
 `inventory` and `audit:live` require an existing authenticated `gh` session. Organization-wide conclusions require independently confirmed read access to **every intended repository**, including private/internal repositories (typically `repo` and `read:org`, with organization/SSO authorization as applicable). REST/GraphQL reconciliation checks consistency of the token-visible inventory; both APIs agreeing does **not** prove hidden repositories are absent. Archived repositories are counted but not scanned. Each repository's tree and workflow/local-action source use one captured immutable default-branch SHA; different repositories are not captured transactionally.
 
+### Weekly agent review: stable findings and durable decisions
+
+Use the review command for recurring work, rather than treating every raw `needs-review` row as a new protection request. It runs the same read-only audit, but keeps **unacknowledged protection gaps**, **unacknowledged uncertainty**, **known decisions**, and **unobserved repositories** separate. It creates no schedule, notification, consumer PR, or protection waiver.
+
+Use a private, durable ledger shared by successive executions. Do not put it in an ephemeral checkout, initialize it every week, or commit it to this public repository. Back it up or version it in your private operations storage. A missing/corrupt ledger fails closed; it never silently restarts with an empty exception list.
+
+```bash
+STATE=/durable/private/socket-firewall-review.json
+REPORT=/durable/private/socket-firewall-audit.json
+
+# Once only. Fails rather than overwriting any existing ledger.
+npm run --silent review -- init --state "$STATE"
+
+# This is the command to give the weekly agent.
+npm run --silent review:weekly -- --state "$STATE" --report "$REPORT"
+```
+
+The JSON result contains `snapshot`, `needsProtection`, `needsReview`, `known`, and `unobserved`. Each case has an opaque stable `id`, immutable GitHub repository ID, repository/workflow/job, reason codes and an input fingerprint. Names and links in this output are private operational metadata; unlike the raw audit CLI's counts-only output, do not post it to a public log. The separate full audit still retains all original classifications and strict assurance diagnostics.
+
+For a finding the agent has investigated, record a specific reason, evidence URL, and recorder identity against the **snapshot it actually inspected**:
+
+```bash
+npm run --silent review -- record --state "$STATE" \
+  --expected '<snapshot from review output>' --case '<exact case id>' \
+  --kind known-review \
+  --reason 'Known caller-selected source uncertainty; not evidence of a missing setup.' \
+  --evidence 'https://github.com/owner/repo/pull/123' --by 'reviewer identity'
+```
+
+Decision kinds:
+
+- `known-review`: acknowledge a known uncertainty/limitation without claiming protection.
+- `tracked-gap`: retain a real, unfinished gap linked to its remediation work, without presenting it as new every week.
+- `exception`: record an explicitly justified policy exception with its approval evidence. The command records a decision; it does **not** grant approval or relabel the underlying audit as integrated. Follow your existing policy authority before using this kind.
+
+`--repository workos/name` can replace `--case` to record the current findings in that exact repository at the inspected snapshot. It expands to individual fingerprinted cases, **not** a wildcard repository allowlist: a new job or changed case is not included. `review show --state "$STATE"` reads the saved view without GitHub access. `review forget --state "$STATE" --case '<id>' --expected '<snapshot>'` explicitly revokes a decision. Agents should report unacknowledged cases and visibility/scan failures, not repeatedly re-open known cases or automatically acknowledge new findings.
+
+Determinism and invalidation rules:
+
+- Stable repository IDs survive renames but do not transfer decisions to a deleted/recreated repository with the same name. Cases are scoped to a workflow/job (or a parse/exclusion finding), never the entire organization or a historical cohort.
+- Job inputs, workflow environment/defaults/triggers, declared upstream jobs, consumed local actions, package-manager configuration and relevant local reusable sources bind each decision. Canonical object ordering and YAML parsing remove API completion order/key order and YAML-comment noise. Unrelated commits, README changes, other independent jobs and wall-clock time do not invalidate it. Raw audit timestamps and captured head SHAs are provenance, not exception identities.
+- A changed input invalidates its decision durably. Reverting that input later does not silently revive the old decision. Fixing/removing a job and subsequently reintroducing the old gap is a new review event. Decisions have no automatic TTL/calendar expiry.
+- A previously tracked finding/decision whose repository is no longer visible is `unobserved`, **not resolved**; it neither expires nor erases a decision. A returning unchanged repository retains it. An unreadable/partial audit or inventory disagreement fails and leaves the last-good ledger untouched. Never use that retained view as proof the failed run was clean.
+- Run/record/forget/init serialize through an exclusive `.lock` file; writes replace the ledger atomically with mode `0600`. Concurrent writers fail rather than lose decisions. A crashed writer leaves a lock: verify no writer is active before removing that exact lock. There is no timeout-based lock stealing or automatic ledger reset.
+
+These are stable acknowledgements of **bounded static findings**, not attestations about arbitrary scripts, remote code or credentials. A known dynamic-source limitation remains a limitation. Default-branch sources can genuinely change between live scans; deterministic output means the same observed inputs and ledger produce the same review list, not that real configuration changes are ignored. Fingerprint format changes require an explicit migration/review, never silently discarding the ledger.
+
 ### Results and privacy
 
 Terminal output is sanitized JSON counts, not repository names or workflow source. Full inventory and audit JSON go to `reports/inventory.json` and `reports/live-audit.json`, respectively. These paths are ignored; reports are atomically replaced with owner-only (`0600`) permissions. Keep them private: never force-add, publish, or upload reports as CI artifacts. Both commands take no CLI flags; a later run replaces the previous report.

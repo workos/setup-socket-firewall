@@ -1,5 +1,6 @@
 import { parseYamlSource as parse } from "./yaml.mjs";
 import { shellCommands, shellTokens } from "./commands.mjs";
+import { fingerprint } from "./fingerprint.mjs";
 
 import { ACTION_REPOSITORY, APPROVED_RELEASE_SHA } from "./constants.mjs";
 import {
@@ -691,6 +692,7 @@ function classifyUsesStep(step, context) {
     const actionText =
       context.localActions?.get(`${prefix}action.yml`) ??
       context.localActions?.get(`${prefix}action.yaml`);
+    context.reviewSources?.set(prefix, actionText ?? null);
     if (actionText === undefined) {
       return [
         {
@@ -1710,12 +1712,14 @@ export function classifyWorkflow(text, context) {
   const jobEntries = Object.entries(workflow.jobs ?? {}).sort(([a], [b]) =>
     a < b ? -1 : a > b ? 1 : 0,
   );
-  const jobs = jobEntries.map(([jobName, job]) =>
-    classifyJob(
+  const jobs = jobEntries.map(([jobName, job]) => {
+    const reviewSources = new Map();
+    const result = classifyJob(
       jobName,
       job,
       {
         ...context,
+        reviewSources,
         exclusionRootDirectory: [undefined, ".", "./"].includes(
           workflow.defaults?.run?.["working-directory"],
         ),
@@ -1726,8 +1730,59 @@ export function classifyWorkflow(text, context) {
           defaultsUncertain(workflow.defaults),
       },
       triggers,
-    ),
-  );
+    );
+    const upstream = Object.create(null);
+    const pending = [jobName];
+    const visited = new Set();
+    while (pending.length) {
+      const name = pending.pop();
+      if (visited.has(name)) continue;
+      visited.add(name);
+      const parent = Object.hasOwn(workflow.jobs, name)
+        ? workflow.jobs[name]
+        : undefined;
+      if (name !== jobName) upstream[name] = parent ?? null;
+      const needs = parent?.needs;
+      pending.push(
+        ...(typeof needs === "string"
+          ? [needs]
+          : Array.isArray(needs)
+            ? needs.filter((item) => typeof item === "string")
+            : []),
+      );
+    }
+    return {
+      ...result,
+      reviewDependencies: [...visited]
+        .filter((name) => name !== jobName)
+        .sort(),
+      reviewFingerprint: fingerprint({
+        version: 1,
+        job,
+        upstream,
+        workflow: {
+          on: workflow.on,
+          env: workflow.env,
+          defaults: workflow.defaults,
+        },
+        visibility: context.visibility,
+        defaultBranch: context.defaultBranch,
+        configuration: context.reviewConfiguration,
+        packageManager: context.packageManager,
+        localSfwRelease: context.localSfwRelease,
+        approvedRelease: APPROVED_RELEASE_SHA,
+        sources: Object.fromEntries(
+          [...reviewSources].map(([path, text]) => {
+            try {
+              return [path, parse(text)];
+            } catch {
+              return [path, text];
+            }
+          }),
+        ),
+      }),
+    };
+  });
 
   return { jobs, path: context.path, triggers };
 }

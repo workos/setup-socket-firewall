@@ -1,4 +1,5 @@
 import { APPROVED_RELEASE_SHA } from "./constants.mjs";
+import { fingerprint } from "./fingerprint.mjs";
 
 // Configuration/executable/startup controls, not application credentials.
 const RELEVANT_ENV =
@@ -438,6 +439,11 @@ export function resolveLocalWorkflowCalls(workflows) {
         if (!callee) return job;
         return {
           ...job,
+          reviewFingerprint: fingerprint([
+            job.reviewFingerprint,
+            callee.reviewFingerprint,
+            callee.jobs.map((child) => child.reviewFingerprint),
+          ]),
           integration: {
             ...job.integration,
             disposition: integrationDisposition([callee]),
@@ -447,6 +453,25 @@ export function resolveLocalWorkflowCalls(workflows) {
         };
       }),
     };
+    const sourceByJob = new Map(
+      result.jobs.map((job) => [job.job, job.reviewFingerprint]),
+    );
+    result.jobs = result.jobs.map((job) =>
+      job.reviewDependencies?.length
+        ? {
+            ...job,
+            reviewFingerprint: fingerprint([
+              job.reviewFingerprint,
+              Object.fromEntries(
+                job.reviewDependencies.map((name) => [
+                  name,
+                  sourceByJob.get(name) ?? null,
+                ]),
+              ),
+            ]),
+          }
+        : job,
+    );
     resolved.set(path, result);
     return result;
   }

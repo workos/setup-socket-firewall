@@ -11,6 +11,7 @@ import { parseYamlSource } from "./yaml.mjs";
 import { captureRepositoryInventory } from "./inventory.mjs";
 import { APPROVED_RUNTIME_BLOBS, ORGANIZATION } from "./constants.mjs";
 import { readRegistryExclusions } from "./exclusions.mjs";
+import { fingerprint, fingerprintYaml } from "./fingerprint.mjs";
 import {
   integrationDisposition,
   resolveLocalWorkflowCalls,
@@ -162,11 +163,14 @@ export async function auditRepository(client, repository) {
   }
 
   try {
+    const sourceDigests = new Map();
     const readSource = async (path) => {
       if (tree.tree.find((entry) => entry.path === path)?.mode === "120000") {
         throw new Error("workflow or local action source is a symlink");
       }
-      return client.getText(fullName, path, headSha);
+      const text = await client.getText(fullName, path, headSha);
+      if (typeof text === "string") sourceDigests.set(path, fingerprint(text));
+      return text;
     };
     const workflowTexts = await mapWithConcurrency(
       workflowPaths,
@@ -183,7 +187,20 @@ export async function auditRepository(client, repository) {
     // bounds cycles in fetching; the classifier separately bounds expansion.
     const localActions = new Map();
     const sourceContext = {
+      // Configuration changes matter; unrelated commits and dependency-lock
+      // churn do not invalidate a reviewed workflow job.
+      reviewConfiguration: fingerprint(
+        tree.tree
+          .filter((entry) =>
+            /(?:^|\/)(?:\.npmrc|\.?bunfig\.toml|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|pnpm-config\.json)$/.test(
+              entry.path,
+            ),
+          )
+          .map(({ path, mode, type, sha }) => ({ path, mode, type, sha }))
+          .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+      ),
       repository: fullName,
+      defaultBranch: repository.defaultBranch,
       headSha,
       localSfwRelease: Object.entries(APPROVED_RUNTIME_BLOBS).every(
         ([path, sha]) =>
@@ -274,13 +291,23 @@ export async function auditRepository(client, repository) {
       workflowTexts.some((text) => text.includes(PACKAGE_MANAGER_READ))
         ? JSON.parse(await readSource("package.json"))?.packageManager
         : undefined;
-    const exclusions = await readRegistryExclusions(
-      repository.name,
-      readSource,
-    );
+    const exclusions = (
+      await readRegistryExclusions(repository.name, readSource)
+    ).map((entry) => ({
+      ...entry,
+      reviewFingerprint: fingerprint({
+        rule: entry,
+        inputs: Object.fromEntries(
+          ["package.json", entry.lockfile, ".npmrc"].map((path) => [
+            path,
+            sourceDigests.get(path),
+          ]),
+        ),
+      }),
+    }));
     const workflows = resolveLocalWorkflowCalls(
-      workflowPaths.map((path, index) =>
-        classifyWorkflow(workflowTexts[index], {
+      workflowPaths.map((path, index) => ({
+        ...classifyWorkflow(workflowTexts[index], {
           ...sourceContext,
           localActions,
           packageManager,
@@ -291,7 +318,8 @@ export async function auditRepository(client, repository) {
           ),
           visibility: repository.visibility,
         }),
-      ),
+        reviewFingerprint: fingerprintYaml(workflowTexts[index]),
+      })),
     );
 
     const managers = [
@@ -355,7 +383,7 @@ export async function runAudit(client, options = {}) {
       const row = await auditRepository(client, repository);
       completed += 1;
       progress(completed, inventory.repositories.length, repository.name);
-      return row;
+      return { ...row, repositoryId: repository.repositoryId };
     },
   );
 

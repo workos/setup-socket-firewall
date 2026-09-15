@@ -101,6 +101,7 @@ export function reconcileRepositoryInventories(
     );
     return {
       defaultBranch: repository.default_branch,
+      ...(repository.id === undefined ? {} : { repositoryId: repository.id }),
       name,
       visibility: normalizedVisibility(repository, "REST"),
     };
