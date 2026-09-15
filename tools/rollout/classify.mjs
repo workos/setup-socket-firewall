@@ -6,6 +6,7 @@ import {
   certainTeardown,
   defaultsUncertain,
   environmentUncertain,
+  literalWorkingDirectory,
   observedIntegration,
   unresolvedJsInvocation,
 } from "./integration.mjs";
@@ -89,6 +90,11 @@ const TRANSPARENT_INSTALL_FLAGS = new Set([
   "--prefer-offline",
   "--no-progress",
   "--no-save",
+  "--package-lock=false",
+  "--omit=dev",
+  "--include=optional",
+  "--os=*",
+  "--cpu=*",
   "--save-exact",
   "--save-dev",
   "--global",
@@ -524,9 +530,10 @@ function classifyUsesStep(step, context) {
         },
       ];
     }
+    const prefix = uses.path ? `${uses.path}/` : "";
     const actionText =
-      context.localActions?.get(`${uses.path}/action.yml`) ??
-      context.localActions?.get(`${uses.path}/action.yaml`);
+      context.localActions?.get(`${prefix}action.yml`) ??
+      context.localActions?.get(`${prefix}action.yaml`);
     if (actionText === undefined) {
       return [
         {
@@ -696,9 +703,23 @@ export function classifyStep(step, context = {}) {
     return [{ kind: "unknown", sourceError: "malformed-action-input" }];
   let operations;
   let uncertain = boundaryUncertain(step);
+  let integrationEnv = step.env;
+  if (
+    typeof step.uses === "string" &&
+    step.uses.split("@")[0] === ACTION_REPOSITORY &&
+    isMapping(step.env) &&
+    /^\$\{\{runner\.temp\}\}\/[\w.-]+$/.test(
+      normalizeExpression(step.env.NPM_CONFIG_USERCONFIG),
+    )
+  ) {
+    // Setup validates this path and configures both it and HOME/.npmrc.
+    // An override on an install step still requires separate review.
+    integrationEnv = { ...step.env };
+    delete integrationEnv.NPM_CONFIG_USERCONFIG;
+  }
   let integrationUncertain =
     boundaryUncertain({ ...step, env: undefined, if: primaryRunGuard(step) }) ||
-    environmentUncertain(step.env);
+    environmentUncertain(integrationEnv);
   const configurationBoundaryUncertain = integrationUncertain;
   if (
     step.uses !== undefined &&
@@ -793,6 +814,25 @@ export function classifyStep(step, context = {}) {
         Object.keys(environment).some((key) =>
           /^(?:npm|pnpm|bun)_CONFIG_/i.test(key),
         );
+      // A literal npm prefix selects the project directory, just like a
+      // run-step working-directory. Do not accept dynamic or escaping paths.
+      const directoryArguments = new Set();
+      if (words[0] === "npm" && !words[1]?.startsWith("-")) {
+        words.forEach((word, index) => {
+          if (
+            word === "--prefix" &&
+            literalWorkingDirectory(words[index + 1])
+          ) {
+            directoryArguments.add(index);
+            directoryArguments.add(index + 1);
+          } else if (
+            word.startsWith("--prefix=") &&
+            literalWorkingDirectory(word.slice(9))
+          ) {
+            directoryArguments.add(index);
+          }
+        });
+      }
       const unsupportedFlags =
         operation.kind === "js-public-download" &&
         operation.corepack === undefined &&
@@ -800,6 +840,7 @@ export function classifyStep(step, context = {}) {
           .filter(
             (word, index) =>
               !bunArguments.has(index) &&
+              !directoryArguments.has(index) &&
               !(
                 supportedReplacement &&
                 word === "--replace-registry-host=always"
@@ -1302,6 +1343,18 @@ export function classifyWorkflow(text, context) {
       path: context.path,
       status: "unknown",
       triggers: [],
+    };
+  }
+  if (
+    workflow == null &&
+    text.trim().startsWith("#") &&
+    text.split("\n").every((line) => /^\s*(?:#.*)?$/.test(line))
+  ) {
+    return {
+      jobs: [],
+      path: context.path,
+      triggers: [],
+      status: "no-in-scope-download",
     };
   }
   if (

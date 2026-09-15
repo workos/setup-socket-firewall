@@ -25,6 +25,14 @@ export function environmentUncertain(env) {
   );
 }
 
+export function literalWorkingDirectory(value) {
+  return (
+    typeof value === "string" &&
+    /^(?:\.\/)?[\w.-]+(?:\/[\w.-]+)*\/?$/.test(value) &&
+    !value.split("/").includes("..")
+  );
+}
+
 export function defaultsUncertain(defaults) {
   if (defaults === undefined) return false;
   return (
@@ -35,8 +43,10 @@ export function defaultsUncertain(defaults) {
     !defaults.run ||
     typeof defaults.run !== "object" ||
     Array.isArray(defaults.run) ||
-    Object.entries(defaults.run).some(
-      ([key, value]) => key !== "shell" || !["bash", "sh"].includes(value),
+    Object.entries(defaults.run).some(([key, value]) =>
+      key === "working-directory"
+        ? !literalWorkingDirectory(value)
+        : key !== "shell" || !["bash", "sh"].includes(value),
     )
   );
 }
@@ -146,7 +156,16 @@ export function observedIntegration(operations, job, context) {
     if (operation.kind === "sfw-setup") {
       setup = operation;
       if (operation.configureBun === "true") bunState = undefined;
-      if (uncertain || !["false", "true"].includes(operation.fallback)) {
+      // The pinned action validates the value and independently restricts
+      // fallback to public external-fork PRs. An expression cannot widen that.
+      const publicForkFallback =
+        context.visibility === "public" &&
+        (operation.fallback === "true" ||
+          /^\$\{\{.+\}\}$/.test(operation.fallback));
+      if (
+        uncertain ||
+        (!publicForkFallback && !["false", "true"].includes(operation.fallback))
+      ) {
         state = {
           status: "unresolved",
           reason: "conditional-or-uncertain-setup",
@@ -163,7 +182,7 @@ export function observedIntegration(operations, job, context) {
         state = { status: "unresolved", reason: "unresolved-setup-token" };
       } else {
         state = {
-          status: operation.fallback === "true" ? "fork-exception" : "covered",
+          status: publicForkFallback ? "fork-exception" : "covered",
           reason: "approved-setup-interval",
         };
       }

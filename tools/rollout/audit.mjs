@@ -13,7 +13,7 @@ import {
 const WORKFLOW_PATH_PATTERN = /^\.(?:github|depot)\/workflows\/[^/]+\.ya?ml$/;
 const LOCKFILE_PATTERN =
   /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
-const LOCAL_ACTION_PATTERN = /uses:\s*['"]?\.\/([^\s'"#]+)/g;
+const LOCAL_ACTION_PATTERN = /uses:\s*['"]?\.\/([^\s'"#]*)/g;
 const AUDIT_CONCURRENCY = 5;
 const MAX_WORKFLOWS_PER_REPOSITORY = 200;
 const MAX_LOCAL_ACTIONS_PER_REPOSITORY = 200;
@@ -182,9 +182,10 @@ export async function auditRepository(client, repository) {
       for (const text of pendingTexts.splice(0)) {
         for (const match of text.matchAll(LOCAL_ACTION_PATTERN)) {
           const base = match[1].replace(/\/+$/, "");
+          const prefix = base ? `${base}/` : "";
           for (const candidate of [
-            `${base}/action.yml`,
-            `${base}/action.yaml`,
+            `${prefix}action.yml`,
+            `${prefix}action.yaml`,
           ]) {
             if (blobPaths.has(candidate) && !localActionPaths.has(candidate)) {
               localActionPaths.add(candidate);
