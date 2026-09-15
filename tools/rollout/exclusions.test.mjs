@@ -27,6 +27,7 @@ async function scan({
   path = rule.workflows[0],
   failRead = false,
   manifest = { dependencies },
+  npmrc,
 } = {}) {
   const lock = {
     lockfileVersion: 3,
@@ -56,6 +57,7 @@ async function scan({
     ],
     [rule.lockfile, JSON.stringify(lock)],
     ["package.json", JSON.stringify(manifest)],
+    ...(npmrc === undefined ? [] : [[".npmrc", npmrc]]),
   ]);
   return auditRepository(
     {
@@ -75,8 +77,8 @@ async function scan({
       async getText(repo, path, ref) {
         assert.equal(ref, sha);
         assert.equal(repo, `workos/${repository}`);
-        if (failRead && path === rule.lockfile)
-          throw new Error("lockfile unavailable");
+        if (!sources.has(path) || (failRead && path === rule.lockfile))
+          throw new Error("source unavailable");
         return sources.get(path);
       },
     },
@@ -102,6 +104,91 @@ test("approved archives are reported separately from fully integrated repositori
       result.disposition,
     );
   }
+});
+
+test("OpenAPI records the approved archive without waiving other findings", async () => {
+  const overrides = { "js-yaml": "^5.4.1", lodash: "^4.17.23" };
+  const npmrc =
+    "# Preserve the archive\nreplace-registry-host=npmjs\nomit-lockfile-registry-resolved=true\n";
+  const steps = [checkout, setup, { run: "npm ci" }, { run: "npm test" }];
+  const options = {
+    repository: "openapi-spec",
+    manifest: { dependencies, overrides },
+    npmrc,
+    jobs: { check: { steps } },
+  };
+  const result = await scan(options);
+  assert.equal(result.exclusions[0].status, "matched");
+  assert.equal(
+    result.exclusions[0].approvalRequestId,
+    "bf1c082e-4112-484a-8683-f36854138690",
+  );
+  assert.deepEqual(result.exclusions[0].workflows, []);
+  assert.equal(result.disposition, "integrated-with-exclusions");
+  assert.equal(result.assuranceDisposition, "needs-review");
+  assert.equal(
+    (
+      await scan({
+        ...options,
+        jobs: { check: { steps: [...steps, { uses: "./missing" }] } },
+      })
+    ).disposition,
+    "needs-review",
+  );
+  assert.equal(
+    (
+      await scan({
+        ...options,
+        jobs: { check: { steps }, uncovered: { steps: [{ run: "npm ci" }] } },
+      })
+    ).disposition,
+    "needs-sfw",
+  );
+  assert.equal(
+    (
+      await scan({
+        ...options,
+        jobs: { check: { steps: [checkout, setup, install] } },
+      })
+    ).disposition,
+    "needs-review",
+  );
+  for (const changes of [
+    { npmrc: npmrc.replace("=npmjs", "=never") },
+    { npmrc: `${npmrc}@other:registry=https://example.invalid/\n` },
+    {
+      manifest: { dependencies, overrides: { ...overrides, lodash: "^5.0.0" } },
+    },
+    {
+      manifest: {
+        dependencies,
+        overrides: { ...overrides, extra: "https://example.invalid/other.tgz" },
+      },
+    },
+    { entry: { integrity: "sha512-changed" } },
+    { entry: { resolved: "https://example.invalid/other.tgz" } },
+    {
+      extraPackages: {
+        "node_modules/another": {
+          resolved: "https://example.invalid/other.tgz",
+        },
+      },
+    },
+  ]) {
+    const changed = await scan({ ...options, ...changes });
+    assert.equal(changed.exclusions[0].status, "stale");
+    assert.equal(changed.disposition, "needs-review");
+  }
+  assert.equal(
+    (await scan({ ...options, npmrc: undefined })).disposition,
+    "audit-error",
+  );
+  // The OpenAPI override snapshot never authorizes overrides in the other repos.
+  assert.equal(
+    (await scan({ manifest: { dependencies, overrides } })).exclusions[0]
+      .status,
+    "stale",
+  );
 });
 
 test("changed pins and additional external sources invalidate the exclusion", async () => {
