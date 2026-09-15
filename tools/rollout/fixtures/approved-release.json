@@ -1,0 +1,100 @@
+{
+  "provenance": {
+    "repository": "workos/setup-socket-firewall",
+    "approvedSha": "ca93dd8aa351f54f4729fe3377a9be23c631c25d",
+    "capturedAt": "2026-09-15T19:58:45.254612+00:00",
+    "note": "Curated public API fields only. Discovery refs were newer at capture time; positive historical verification supplies synthetic refs to approvedSha, never production constants."
+  },
+  "discovery": {
+    "branch": {
+      "ref": "refs/heads/action-release/v1",
+      "object": {
+        "sha": "195977cfa38ab4d70363af5403a106dbc54a61eb",
+        "type": "commit"
+      }
+    },
+    "tag": {
+      "ref": "refs/tags/v1",
+      "object": {
+        "sha": "195977cfa38ab4d70363af5403a106dbc54a61eb",
+        "type": "commit"
+      }
+    }
+  },
+  "commit": {
+    "sha": "ca93dd8aa351f54f4729fe3377a9be23c631c25d",
+    "tree": {
+      "sha": "5cdbe39b0edafee9457767134320d95c61d91a60"
+    },
+    "verification": {
+      "verified": true,
+      "reason": "valid"
+    }
+  },
+  "tree": {
+    "sha": "5cdbe39b0edafee9457767134320d95c61d91a60",
+    "truncated": false,
+    "tree": [
+      {
+        "path": "LICENSE",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "c0cf74558bfb8eb6ebf3f0f24fb5fc180583efde"
+      },
+      {
+        "path": "action.yml",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "156de46f25b2facc56cd7a5b2ea9e78b3de4ea1d"
+      },
+      {
+        "path": "scripts",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "4ad0c03537d69113174ad3365a27ccaa303d158b"
+      },
+      {
+        "path": "scripts/configure.sh",
+        "mode": "100755",
+        "type": "blob",
+        "sha": "155d6aab883d58211a4bb3fbfa70b27a2d96dae2"
+      },
+      {
+        "path": "scripts/teardown.sh",
+        "mode": "100755",
+        "type": "blob",
+        "sha": "a1ddc2f06a65c607f2af2ae0395bada78e236913"
+      },
+      {
+        "path": "teardown",
+        "mode": "040000",
+        "type": "tree",
+        "sha": "02b1d5554d43317d3aaface6c52c44fe9c73e428"
+      },
+      {
+        "path": "teardown/action.yml",
+        "mode": "100644",
+        "type": "blob",
+        "sha": "d47a0abeaaa0d6717e5ce9cdbc45c3356ea3726c"
+      }
+    ]
+  },
+  "contents": {
+    "action.yml": {
+      "type": "file",
+      "path": "action.yml",
+      "size": 1708,
+      "sha": "156de46f25b2facc56cd7a5b2ea9e78b3de4ea1d",
+      "encoding": "base64",
+      "content": "bmFtZTogU2V0dXAgU29ja2V0IEZpcmV3YWxsCmRlc2NyaXB0aW9uOiA+LQog\nIFJvdXRlIHB1YmxpYyBucG0tY29tcGF0aWJsZSBkZXBlbmRlbmN5IGRvd25s\nb2FkcyB0aHJvdWdoIHRoZSBXb3JrT1MgU29ja2V0CiAgRmlyZXdhbGwgYW5k\nIEROUy1udWxsLXJvdXRlIGtub3duIHB1YmxpYyBKYXZhU2NyaXB0IHJlZ2lz\ndHJpZXMuCmlucHV0czoKICB0b2tlbjoKICAgIGRlc2NyaXB0aW9uOiA+LQog\nICAgICBTb2NrZXQgRmlyZXdhbGwgYXV0aCB0b2tlbi4gUGFzcyBzZWNyZXRz\nLlNPQ0tFVF9GSVJFV0FMTF9UT0tFTiBkaXJlY3RseQogICAgICB0byB0aGlz\nIGFjdGlvbjsgZG8gbm90IGV4cG9zZSBpdCBhdCB3b3JrZmxvdyBvciBqb2Ig\nc2NvcGUuCiAgICByZXF1aXJlZDogZmFsc2UKICAgIGRlZmF1bHQ6ICIiCiAg\nYWxsb3ctZXh0ZXJuYWwtZm9yay1mYWxsYmFjazoKICAgIGRlc2NyaXB0aW9u\nOiA+LQogICAgICBQZXJtaXQgcHVibGljLXJlZ2lzdHJ5IGZhbGxiYWNrIG9u\nbHkgZm9yIGFuIGV4dGVybmFsIHB1bGwgcmVxdWVzdCBhZ2FpbnN0CiAgICAg\nIGEgcHVibGljIHJlcG9zaXRvcnkuIFRoZSBhY3Rpb24gaW5kZXBlbmRlbnRs\neSB2YWxpZGF0ZXMgdGhlIGV2ZW50IGNvbnRleHQuCiAgICByZXF1aXJlZDog\nZmFsc2UKICAgIGRlZmF1bHQ6ICJmYWxzZSIKICBjb25maWd1cmUtYnVuOgog\nICAgZGVzY3JpcHRpb246ID4tCiAgICAgIENvbmZpZ3VyZSBCdW4ncyB1c2Vy\nLWxldmVsIHJlZ2lzdHJ5IHRva2VuIGZpbGUuIEVuYWJsZSBvbmx5IGZvciBC\ndW4KICAgICAgZGVwZW5kZW5jeS1pbnN0YWxsIGpvYnMuCiAgICByZXF1aXJl\nZDogZmFsc2UKICAgIGRlZmF1bHQ6ICJmYWxzZSIKb3V0cHV0czoKICBhY3Rp\ndmU6CiAgICBkZXNjcmlwdGlvbjogV2hldGhlciBTb2NrZXQgRmlyZXdhbGwg\ncHJvdGVjdGlvbiBpcyBhY3RpdmUuCiAgICB2YWx1ZTogJHt7IHN0ZXBzLmNv\nbmZpZ3VyZS5vdXRwdXRzLmFjdGl2ZSB9fQpydW5zOgogIHVzaW5nOiBjb21w\nb3NpdGUKICBzdGVwczoKICAgIC0gbmFtZTogQ29uZmlndXJlIFNvY2tldCBG\naXJld2FsbAogICAgICBpZDogY29uZmlndXJlCiAgICAgIHNoZWxsOiBiYXNo\nCiAgICAgIGVudjoKICAgICAgICBTRldfVE9LRU46ICR7eyBpbnB1dHMudG9r\nZW4gfX0KICAgICAgICBTRldfQUxMT1dfRVhURVJOQUxfRk9SS19GQUxMQkFD\nSzogJHt7IGlucHV0cy5hbGxvdy1leHRlcm5hbC1mb3JrLWZhbGxiYWNrIH19\nCiAgICAgICAgU0ZXX0NPTkZJR1VSRV9CVU46ICR7eyBpbnB1dHMuY29uZmln\ndXJlLWJ1biB9fQogICAgICAgIFNGV19FVkVOVF9OQU1FOiAke3sgZ2l0aHVi\nLmV2ZW50X25hbWUgfX0KICAgICAgICBTRldfUkVQT1NJVE9SWV9QUklWQVRF\nOiAke3sgZ2l0aHViLmV2ZW50LnJlcG9zaXRvcnkucHJpdmF0ZSB9fQogICAg\nICAgIFNGV19IRUFEX1JFUE9TSVRPUlk6ICR7eyBnaXRodWIuZXZlbnQucHVs\nbF9yZXF1ZXN0LmhlYWQucmVwby5mdWxsX25hbWUgfX0KICAgICAgICBTRldf\nQkFTRV9SRVBPU0lUT1JZOiAke3sgZ2l0aHViLmV2ZW50LnB1bGxfcmVxdWVz\ndC5iYXNlLnJlcG8uZnVsbF9uYW1lIH19CiAgICAgICAgIyBUZXN0LW9ubHkg\nb3ZlcnJpZGUgaXMgY2xlYXJlZCBmb3IgcmVhbCBhY3Rpb24gY29uc3VtZXJz\nLgogICAgICAgIFNGV19IT1NUU19GSUxFOiAiIgogICAgICBydW46IGJhc2gg\nIiRHSVRIVUJfQUNUSU9OX1BBVEgvc2NyaXB0cy9jb25maWd1cmUuc2giCg==\n"
+    },
+    "teardown/action.yml": {
+      "type": "file",
+      "path": "teardown/action.yml",
+      "size": 642,
+      "sha": "d47a0abeaaa0d6717e5ce9cdbc45c3356ea3726c",
+      "encoding": "base64",
+      "content": "bmFtZTogVGVhcmRvd24gU29ja2V0IEZpcmV3YWxsCmRlc2NyaXB0aW9uOiA+\nLQogIFJlbW92ZSBvbmx5IFNvY2tldCBGaXJld2FsbC1vd25lZCBucG0gYW5k\nIEROUyBjb25maWd1cmF0aW9uLCB0aGVuIHJlc3RvcmUKICBwdWJsaWMgbnBt\nLWNvbXBhdGlibGUgcmVnaXN0cnkgYWNjZXNzIGJlZm9yZSBwYWNrYWdlIHB1\nYmxpY2F0aW9uLgpvdXRwdXRzOgogIGFjdGl2ZToKICAgIGRlc2NyaXB0aW9u\nOiBXaGV0aGVyIFNvY2tldCBGaXJld2FsbCBwcm90ZWN0aW9uIHJlbWFpbnMg\nYWN0aXZlLgogICAgdmFsdWU6ICR7eyBzdGVwcy50ZWFyZG93bi5vdXRwdXRz\nLmFjdGl2ZSB9fQpydW5zOgogIHVzaW5nOiBjb21wb3NpdGUKICBzdGVwczoK\nICAgIC0gbmFtZTogUmVzdG9yZSBwdWJsaWMgcGFja2FnZSByZWdpc3RyeQog\nICAgICBpZDogdGVhcmRvd24KICAgICAgc2hlbGw6IGJhc2gKICAgICAgZW52\nOgogICAgICAgICMgVGVzdC1vbmx5IG92ZXJyaWRlIGlzIGNsZWFyZWQgZm9y\nIHJlYWwgYWN0aW9uIGNvbnN1bWVycy4KICAgICAgICBTRldfSE9TVFNfRklM\nRTogIiIKICAgICAgICBTRldfUk9MTEJBQ0tfT05MWTogImZhbHNlIgogICAg\nICBydW46IGJhc2ggIiRHSVRIVUJfQUNUSU9OX1BBVEgvLi4vc2NyaXB0cy90\nZWFyZG93bi5zaCIK\n"
+    }
+  }
+}

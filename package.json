@@ -1,0 +1,28 @@
+{
+  "name": "@workos/setup-socket-firewall-rollout",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Read-only Socket Firewall CI gap detector",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "audit:live": "node tools/rollout/cli.mjs audit",
+    "review": "node tools/rollout/review-cli.mjs",
+    "review:weekly": "node tools/rollout/review-cli.mjs run",
+    "check": "npm run format:check && npm test",
+    "format": "prettier --write package.json tools/rollout/*.mjs",
+    "format:check": "prettier --check package.json tools/rollout/*.mjs",
+    "inventory": "node tools/rollout/cli.mjs inventory",
+    "test": "node --test tools/rollout/*.test.mjs",
+    "test:unit": "node --test tools/rollout/*.test.mjs",
+    "verify-action": "node tools/rollout/cli.mjs verify-action"
+  },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}

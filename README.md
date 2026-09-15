@@ -17,7 +17,7 @@ It does not route package publication or Python, Java, Go, Ruby, Rust, .NET, pri
 Consumers must pin the full 40-character SHA of the reviewed action-only `v1` commit. Do not execute a mutable tag, branch, abbreviated SHA, or normal source commit.
 
 ```yaml
-uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
 ```
 
 The moving `v1` tag and `action-release/v1` branch are for human discovery and Renovate lookup. The repository’s normal source history contains tests and rollout tooling; each action-only release commit contains only the files in `release-manifest.txt`.
@@ -37,7 +37,7 @@ Run package-manager setup first, then configure SFW before the first dependency 
     registry-url: https://registry.npmjs.org/
 
 - name: Configure Socket Firewall
-  uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+  uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
   with:
     token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
 
@@ -48,7 +48,7 @@ For a Bun dependency-install job, also set `configure-bun: true`. This writes a 
 
 The token is fail-closed by default. Private, internal, trusted/default-branch, and Dependabot jobs stop before dependency download when the token is absent.
 
-`SOCKET_FIREWALL_TOKEN` is an organization secret. Dependabot uses a separate secret store: provision the same secret there for dependency-update runs that must pass, or accept the intentional fail-closed result. Ask in `#ask-foundation` about repository selection or token delivery.
+`SOCKET_FIREWALL_TOKEN` is an organization secret available to private and internal repositories. Public repositories never receive it; an approved public repository is instead individually selected into the separate `PUBLIC_SOCKET_FIREWALL_TOKEN` organization secret and passes that secret to the same `token` input. Dependabot uses a separate secret store: provision the same secret there for dependency-update runs that must pass, or accept the intentional fail-closed result. Ask in `#ask-foundation` about repository selection or token delivery.
 
 ### Public external-fork usage
 
@@ -68,7 +68,7 @@ steps:
       node-version: 22
 
   - name: Configure Socket Firewall
-    uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+    uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
     with:
       token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
       allow-external-fork-fallback: true
@@ -134,7 +134,7 @@ When an existing job must both install and publish, run the teardown entrypoint 
 
 ```yaml
 - name: Configure Socket Firewall
-  uses: workos/setup-socket-firewall@<FULL_40_CHARACTER_V1_SHA> # v1
+  uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
   with:
     token: ${{ secrets.SOCKET_FIREWALL_TOKEN }}
 
@@ -142,7 +142,7 @@ When an existing job must both install and publish, run the teardown entrypoint 
 - run: pnpm build
 
 - name: Restore public package registry
-  uses: workos/setup-socket-firewall/teardown@<SAME_FULL_40_CHARACTER_V1_SHA> # v1
+  uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
 
 - name: Publish package
   run: pnpm publish --access public --provenance --no-git-checks
@@ -195,7 +195,134 @@ No maintainer runs local release commands.
 
 The workflow uses only the repository-scoped `GITHUB_TOKEN` with `contents: write`, serializes releases, skips stale successful commits when `main` has advanced, and can be retried through `workflow_dispatch`. A future breaking release must change the reviewed channel to `v2`; it must not repurpose `v1`.
 
-Never publish the normal source commit as an action release: it contains tests and, after HELP-724 Phase 2, the one-time rollout verifier and report source.
+Never publish the normal source commit as an action release: it contains tests and the read-only CI gap detector source.
+
+## Read-only CI gap detector
+
+The source branch includes an **operator-run candidate detector**, not runtime proof of protection. It never enters the action release and does not change repositories, create PRs, schedule scans, or diagnose general CI health.
+
+```bash
+npm ci --ignore-scripts --no-audit --no-fund
+npm run check          # offline formatting and mocked Node tests
+npm run inventory     # read-only, token-visible WorkOS inventory
+npm run audit:live     # read-only, default-branch workflow candidate scan
+```
+
+`inventory` and `audit:live` require an existing authenticated `gh` session. Organization-wide conclusions require independently confirmed read access to **every intended repository**, including private/internal repositories (typically `repo` and `read:org`, with organization/SSO authorization as applicable). REST/GraphQL reconciliation checks consistency of the token-visible inventory; both APIs agreeing does **not** prove hidden repositories are absent. Archived repositories are counted but not scanned. Each repository's tree and workflow/local-action source use one captured immutable default-branch SHA; different repositories are not captured transactionally.
+
+### Weekly agent review: stable findings and durable decisions
+
+Use the review command for recurring work, rather than treating every raw `needs-review` row as a new protection request. It runs the same read-only audit, but keeps **unacknowledged protection gaps**, **unacknowledged uncertainty**, **known decisions**, and **unobserved repositories** separate. It creates no schedule, notification, consumer PR, or protection waiver.
+
+Use a private, durable ledger shared by successive executions. Do not put it in an ephemeral checkout, initialize it every week, or commit it to this public repository. Back it up or version it in your private operations storage. A missing/corrupt ledger fails closed; it never silently restarts with an empty exception list.
+
+```bash
+STATE=/durable/private/socket-firewall-review.json
+REPORT=/durable/private/socket-firewall-audit.json
+
+# Once only. Fails rather than overwriting any existing ledger.
+npm run --silent review -- init --state "$STATE"
+
+# This is the command to give the weekly agent.
+npm run --silent review:weekly -- --state "$STATE" --report "$REPORT"
+```
+
+The JSON result contains `snapshot`, `needsProtection`, `needsReview`, `known`, and `unobserved`. Each case has an opaque stable `id`, immutable GitHub repository ID, repository/workflow/job, reason codes and an input fingerprint. Names and links in this output are private operational metadata; unlike the raw audit CLI's counts-only output, do not post it to a public log. The separate full audit still retains all original classifications and strict assurance diagnostics.
+
+For a finding the agent has investigated, record a specific reason, evidence URL, and recorder identity against the **snapshot it actually inspected**:
+
+```bash
+npm run --silent review -- record --state "$STATE" \
+  --expected '<snapshot from review output>' --case '<exact case id>' \
+  --kind known-review \
+  --reason 'Known caller-selected source uncertainty; not evidence of a missing setup.' \
+  --evidence 'https://github.com/owner/repo/pull/123' --by 'reviewer identity'
+```
+
+Decision kinds:
+
+- `known-review`: acknowledge a known uncertainty/limitation without claiming protection.
+- `tracked-gap`: retain a real, unfinished gap linked to its remediation work, without presenting it as new every week.
+- `exception`: record an explicitly justified policy exception with its approval evidence. The command records a decision; it does **not** grant approval or relabel the underlying audit as integrated. Follow your existing policy authority before using this kind.
+
+`--repository workos/name` can replace `--case` to record the current findings in that exact repository at the inspected snapshot. It expands to individual fingerprinted cases, **not** a wildcard repository allowlist: a new job or changed case is not included. `review show --state "$STATE"` reads the saved view without GitHub access. `review forget --state "$STATE" --case '<id>' --expected '<snapshot>'` explicitly revokes a decision. Agents should report unacknowledged cases and visibility/scan failures, not repeatedly re-open known cases or automatically acknowledge new findings.
+
+Determinism and invalidation rules:
+
+- Stable repository IDs survive renames but do not transfer decisions to a deleted/recreated repository with the same name. Cases are scoped to a workflow/job (or a parse/exclusion finding), never the entire organization or a historical cohort.
+- Job inputs, workflow environment/defaults/triggers, declared upstream jobs, consumed local actions, package-manager configuration and relevant local reusable sources bind each decision. Canonical object ordering and YAML parsing remove API completion order/key order and YAML-comment noise. Unrelated commits, README changes, other independent jobs and wall-clock time do not invalidate it. Raw audit timestamps and captured head SHAs are provenance, not exception identities.
+- A changed input invalidates its decision durably. Reverting that input later does not silently revive the old decision. Fixing/removing a job and subsequently reintroducing the old gap is a new review event. Decisions have no automatic TTL/calendar expiry.
+- A previously tracked finding/decision whose repository is no longer visible is `unobserved`, **not resolved**; it neither expires nor erases a decision. A returning unchanged repository retains it. An unreadable/partial audit or inventory disagreement fails and leaves the last-good ledger untouched. Never use that retained view as proof the failed run was clean.
+- Run/record/forget/init serialize through an exclusive `.lock` file; writes replace the ledger atomically with mode `0600`. Concurrent writers fail rather than lose decisions. A crashed writer leaves a lock: verify no writer is active before removing that exact lock. There is no timeout-based lock stealing or automatic ledger reset.
+
+These are stable acknowledgements of **bounded static findings**, not attestations about arbitrary scripts, remote code or credentials. A known dynamic-source limitation remains a limitation. Default-branch sources can genuinely change between live scans; deterministic output means the same observed inputs and ledger produce the same review list, not that real configuration changes are ignored. Fingerprint format changes require an explicit migration/review, never silently discarding the ledger.
+
+### Results and privacy
+
+Terminal output is sanitized JSON counts, not repository names or workflow source. Full inventory and audit JSON go to `reports/inventory.json` and `reports/live-audit.json`, respectively. These paths are ignored; reports are atomically replaced with owner-only (`0600`) permissions. Keep them private: never force-add, publish, or upload reports as CI artifacts. Both commands take no CLI flags; a later run replaces the previous report.
+
+Audit JSON schema **3** separates primary `dispositions` (observed dependency-install integration) from `assuranceDispositions` (strict execution/security review). Successfully inspected repositories retain both dispositions, their `headSha`, workflow/job operations and violations; read errors remain explicit error rows. Each job's `integration` includes per-download `covered`, `covered-with-exclusion`, `fork-exception`, `gap` or `unresolved` configuration evidence, reason codes and diagnostic notes. `additionalJsPaths` records explicit JS invocations outside the direct-install grammar, distinguishing `setup-observed` from unresolved configuration. `runtimeVerification` is always `not-performed`. `scanStatus: complete` means the token-visible scan completed, **not** that all jobs are protected. `partial` means one or more repositories have an `audit-error` row. CLI exit **0** means the scan completed, even when gaps/review candidates were found; exit **1** means an operational failure (including partial scans). Consumers should inspect dispositions separately from the exit code. Fatal inventory/API/command errors emit a sanitized error and exit 1; they do not refresh the report, so check its timestamp before use.
+
+| Repository disposition | Meaning |
+| --- | --- |
+| `needs-sfw` | A recognized download has a definite missing/unsupported setup interval in its own job. |
+| `needs-review` | Install configuration, an explicit JS invocation, or relevant workflow/local-action source could not be resolved. Ordinary opaque scripts alone do not cause this result. |
+| `integrated` | SFW configuration is observed for the identified install paths, possibly with an explicit public-fork exception. This is not execution or traffic assurance. |
+| `integrated-with-exclusions` | Observed integration has an approved, source-pinned exclusion. Inspect the repository's `exclusions`; the excluded source is not inspected by SFW. |
+| `audit-error` | A repository read failed or was incomplete; never a clean result. |
+| `no-ci`, `no-js-ci`, `empty` | No observed in-scope download candidate; not proof that remote actions or arbitrary code cannot download packages. |
+
+Primary integration is not a rollout percentage or a certification of every command. For example, setup → `npm ci` → `npm test` can be `integrated` while strict assurance remains `needs-review`. Without setup, the same direct install remains a `needs-sfw` candidate even though the later test is opaque. A new uncovered install job cannot be masked by an integrated sibling. An ordinary script-only sibling does not invent another install path: its code remains unverified in assurance diagnostics.
+
+Strict job `status` and `assuranceDisposition` retain opaque execution and security findings (`blocked-trust`, `unsafe-publish`, `blocked-yarn`, etc.). **Inspect those findings separately; `integrated` does not dismiss them.** A strict `protected` or `safe-publish` status remains static evidence, not runtime or lifecycle-hook proof. Schema1 consumers must not interpret newer primary dispositions as the old assurance verdicts. Schema2 consumers must handle schema3's `integrated-with-exclusions` disposition and `covered-with-exclusion` download status explicitly, not count them as fully covered.
+
+### Approved source exclusions
+
+`tools/rollout/exclusions.mjs` records the approved `tree-sitter-kotlin` GitHub archive in `oagen`, `oagen-emitters` and `openapi-spec`, including its exact path, version, URL, integrity pin and approval provenance. This archive intentionally downloads outside SFW; npm-registry dependencies still use the firewall. The existing `NPM_CONFIG_REPLACE_REGISTRY_HOST=npmjs` setting is retained because rewriting GitHub archives to the npm proxy breaks installation.
+
+Each scan reads the manifest and version-3 lockfile at the same captured repository SHA. Manifest dependency drift, workspace or unrecorded override configuration, a changed pin or any additional non-npm source makes the exclusion `stale` and keeps the repository in review; an unreadable lockfile is an audit error. For step-level environment exceptions, only direct, repository-root `npm install`/`npm ci` steps with that exact setting in the recorded workflows receive the exclusion, after one unconditional default-source checkout. Alternate checkout refs/repositories/paths, nested working directories and composite-action installs are not excused. Missing setup, additional gaps, unknown execution contexts and other configuration overrides remain findings. Qualified results use `integrated-with-exclusions`, never an unqualified protection claim. Strict assurance remains unchanged.
+
+OpenAPI's exception is recorded from its project `.npmrc`, not used to waive any step-level environment override. Its effective config lines and existing `js-yaml`/`lodash` override snapshot must match the record; changes return it to review. Unresolved checkout/action provenance and conditional execution remain findings even when the archive pin matches.
+
+### Static limits
+
+The primary question is **whether SFW is configured for identified dependency-install paths**, not whether every command can be proved to preserve protection. Arbitrary scripts, remote actions, `curl`/shell bootstraps and package-script bodies remain unverified; they do not erase or synthesize observed setup. A script before setup or after teardown is not presumed to install dependencies. An explicit install in that position is still a gap. `no-js-ci` means no identified dependency-install path in the supported workflow source—not that the repository contains no JavaScript or that its scripts cannot install packages.
+
+The small grammar recognizes npm/pnpm/Bun installs, download-capable executors, Yarn blockers and setup/teardown ordering. A lexical boundary scanner keeps quoted data and command substitutions inside their containing command rather than inventing installs from text. Pipelines and executor payload arguments do not invalidate configuration simply because their execution is opaque. For `npx`/`bunx`, a literal target after optional `-y`/`--yes` separates installer options from program arguments, including quoted or variable-valued payloads. Pre-target registry overrides remain gaps; unsupported installer options, dynamic installer targets and explicit context changes can still require review. Uninterpreted shell structure can establish configuration presence without proving whether a particular command executes; it cannot establish a definite missing install when the command may only be data.
+
+Configuration checks retain the approved action SHA, visibility-appropriate token, Bun configuration and public-fork exception rules. Disabled or continued-on-error setup cannot silently cover an install. Conditional setup covers an install only when the install requires every recognized setup predicate. The bounded grammar supports boolean-string output comparisons (dependency jobs or uniquely identified earlier steps) and literal `github.event_name` equalities, with at most two predicates joined by `&&`. A stricter install condition can imply setup, never the reverse. Future/duplicate step IDs, mutable environment guards, status functions, partial expression interpolation, unsupported expressions and unmatched conditions remain unresolved; strict execution assurance is unchanged. Corepack uncertainty survives conditional or targeted controls. The action-exported `SFW_BUN_CONFIG_PATH` is recognized in Bun's `--config` argument when Bun setup is enabled; explicit overrides of that variable remain configuration questions. Whole-value composite input references in `with`/`env` are bound to caller values/defaults without evaluating conditions or interpolating shell text. Missing/malformed local source, cycles and expansion limits remain review findings.
+
+Known registry writes and teardown invalidate the relevant configuration; a command-local override does not contaminate later installs. npm/pnpm registry setters, configuration-file writes (including `tee`), standalone relevant assignments and GitHub environment-file writes remain findings rather than being treated as generic opacity. Reading a configuration variable is not a mutation. HOME/PATH/NODE_OPTIONS overrides, relevant exported variables within a run block, unsupported environment wrappers, dynamic mappings and job containers remain configuration questions. Ordinary application secrets/settings, version metadata and sibling service containers do not invalidate host setup ordering. Job-level guards affect shared reachability; explicit status predicates and conditional configuration transitions remain conservative. Exact npm `--replace-registry-host=always` preserves the configured registry; other modes require review unless covered by an approved source exclusion.
+
+Literal repository-relative default working directories and npm `--prefix` arguments after the install verb are treated like explicit run-step working directories. Supported install options include `--include=optional`, `--omit=dev`, `--package-lock=false` and Bun's literal `--os="*" --cpu="*"`; unknown options and dynamic or escaping directory paths remain reviewable. Root local actions (`uses: ./`) are read from `action.yml` or `action.yaml` at the captured SHA. Entirely commented-out workflow files have no active jobs; malformed or missing source still requires review.
+
+Literal leading npm workspace selectors (`-w`, `--workspace`, and `--workspace=`) retain the underlying command classification: scripts stay unverified script execution, while installs and explicit `npm exec -- <target>` remain download candidates. Literal npm package selectors in `npx --package`/`-p` are recognized without treating executable payload flags as installer configuration. A workspace selector may contain a matrix component only when every declared alternative is a literal, safe single path component and the matrix has no `include` overrides; this does not verify any script body. Runner-temp tarball arguments such as `"$RUNNER_TEMP"/package-*.tgz` are local inputs to npm/npx, not alternate registry URLs; overriding `RUNNER_TEMP` invalidates that recognition's configuration evidence. Other dynamic selectors, unsupported options, and post-teardown executor downloads remain findings.
+
+The exact three-line `set -euo pipefail` → `pnpm_package="$(node --print 'require("./package.json").packageManager')"` → `npm install --global "$pnpm_package" --ignore-scripts --no-audit --no-fund` bootstrap can resolve a plain `pnpm@major.minor.patch` from the captured root manifest. It requires one default-source checkout, root working directories, no project `.npmrc`, and no preceding shell/local/mutable action steps. Unsupported pins, source changes, extra commands and configuration overrides remain unresolved. This is snapshot-based configuration evidence, not runtime verification of the JSON reader or preceding pinned actions; strict assurance stays unverified.
+
+The exact standard shell template `bash --noprofile --norc -euo pipefail {0}` is recognized alongside `bash`/`sh`. A clean-room `env -i` npm invocation is recognized only when it retains the exact inherited HOME, PATH, action registry and npm-config path; missing, changed, duplicated or additional configuration variables remain unresolved. Local `npm version`, argument-free/format-only `npm pack`, and literal Bun script filenames remain unverified execution, not invented download operations. Remote or dynamic `npm pack` targets remain review candidates.
+
+A setup-only `NPM_CONFIG_USERCONFIG` pointing to a named file under `${{ runner.temp }}` is recognized because the pinned action validates that path and configures both it and `HOME/.npmrc`. Install-step overrides remain unresolved. Public fallback expressions remain recorded as possible `fork-exception` paths: the pinned action validates the value and independently permits fallback only for public external-fork pull requests. Neither recognition is runtime proof or a repository allowlist.
+
+Local reusable workflows are already read at the same repository SHA and contribute their actual primary result instead of an automatic unknown. Missing targets and cycles remain reviewable. A remote reusable call can be resolved as having no observed JS install only when that workflow was already captured in the same organization's inventory at the requested default branch or exact SHA. A different pin/tag is never replaced with the current body. Remote callees with installs require caller-specific context and remain unresolved; no additional sources are fetched by this cross-reference step.
+
+Local action lookup understands literal checkout mount paths only when the preceding checkout selects the captured repository and source (default selection, `github.sha`, or the exact captured SHA). A different repository/ref, conditional or sparse checkout, or unknown potentially overlapping destination remains an explicit checkout-provenance finding. The detector does not evaluate environment assignments or reusable-workflow input expressions to guess a destination/ref. In particular, a caller-selected checker revision cannot be replaced with the checker's current default-branch implementation. In reusable workflows, implicit checkout and `github.repository`/`github.sha` refer to the caller; resolving a local source from the callee requires an explicit matching repository and source selection.
+
+A local setup/teardown entrypoint can supply configuration evidence when all four runtime blobs match the immutable approved release, with a preceding resolved checkout. Changed/missing blobs or different source selections do not inherit this recognition. This is a source-equivalence check, not a self-test exemption or proof that earlier runtime code did not modify the files. Matrix-dependent Bun configuration, intentional direct-public fixture installs and expected Yarn failures remain reviewable; no unapproved test or archive exception is added.
+
+An adjacent fail-closed `bun install --help` check for `--offline` permits the exact non-composite run-step canonicalization command `bun install --lockfile-only --offline --ignore-scripts --registry=https://registry.npmjs.org/` to be recorded as capability-guarded offline validation, not a registry download. The guard must exit 1 when support is absent; intervening commands, custom shells, relevant environment overrides, composite expansion, missing flags and unguarded/later invocations do not inherit the recognition. A bare `--offline` flag is insufficient because older Bun versions can ignore it. Strict runtime assurance remains unverified.
+
+Literal quoted `cat` heredoc bodies are data rather than shell commands, including inside command substitutions. Shell-fed/piped heredocs, missing delimiters and GitHub expressions in the body are not granted that recognition. The lexer bounds substitutions per command (20), nesting (100), and emitted commands/words (1,000), so many independent metadata reads do not exhaust a whole job's substitution budget. Exhausted or malformed source always retains a review finding.
+
+Only top-level `.github/workflows/*.yml|yaml`, `.depot/workflows/*.yml|yaml` and referenced local actions in the captured scope are inspected. The detector does not execute code, inspect arbitrary script/action implementations, validate credentials, prove traffic routing or certify bespoke controls. Security findings and unverified execution remain separate assurance diagnostics. No historical cohort, coverage percentage or blanket repository allowlist is used.
+
+### Manual release snapshot verification
+
+```bash
+npm run verify-action
+```
+
+This separate **live, strict snapshot check** validates discovery refs, the approved signed action-only SHA, exact allowlisted tree, and runtime entrypoints against `tools/rollout/constants.mjs` and the local release manifest. It is not part of `npm run check` or ordinary source tests. It is expected to fail when `v1` advances or the source manifest no longer matches that historical snapshot; this alone is not evidence the current release is unsafe. Review/update the snapshot deliberately for a new release, rather than weakening integrity checks. Offline unit tests use an explicit historical manifest fixture so future manifest additions cannot break unrelated source CI. `tools/rollout/fixtures/approved-release.json` also records curated public API responses for the approved immutable commit/tree/action contents and the newer discovery refs observed at capture time. Positive historical tests explicitly synthesize only the old ref targets; separate tests assert that the captured moved refs are rejected. These fixtures are independent of production constants and contain no credential, inventory, or private repository source.
 
 ## Contributing
 

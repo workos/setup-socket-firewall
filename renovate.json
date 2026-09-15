@@ -1,5 +1,13 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>workos/renovate-config:public"],
-  "enabledManagers": ["github-actions"]
+  "enabledManagers": ["github-actions", "npm"],
+  "packageRules": [
+    {
+      "description": "Update the approved Socket Firewall SHA only with its verifier constant",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["workos/setup-socket-firewall"],
+      "enabled": false
+    }
+  ]
 }
