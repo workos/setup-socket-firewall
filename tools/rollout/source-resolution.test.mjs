@@ -20,11 +20,12 @@ async function audit(
   steps,
   files = { "actions/install/action.yml": action },
   entries = [],
+  on = "push",
 ) {
   files = {
     ...files,
     ".github/workflows/ci.yml": stringify({
-      on: "push",
+      on,
       jobs: { test: { "runs-on": "ubuntu-latest", steps } },
     }),
   };
@@ -203,6 +204,24 @@ test("local SFW entrypoints require all immutable reviewed runtime blobs", async
         [{ ...steps[0], if: false }, ...steps.slice(1)],
         files,
         entries,
+      )
+    ).result.disposition,
+    "integrated",
+  );
+  assert.notEqual(
+    (await audit(steps, files, entries, "workflow_call")).result.disposition,
+    "integrated",
+  );
+  assert.equal(
+    (
+      await audit(
+        [
+          { ...steps[0], with: { repository: "workos/fixture", ref: sha } },
+          ...steps.slice(1),
+        ],
+        files,
+        entries,
+        "workflow_call",
       )
     ).result.disposition,
     "integrated",

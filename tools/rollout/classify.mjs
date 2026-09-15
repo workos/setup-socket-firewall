@@ -586,15 +586,19 @@ export function resolveLocalActionSource(path, context = {}) {
     if (!root && path !== prefix && !path.startsWith(`${prefix}/`)) continue;
     const repository = input.repository;
     const ref = input.ref;
+    // In a reusable workflow, implicit checkout/github.repository select the
+    // caller, not necessarily the repository containing this workflow.
     const sameRepository =
-      repository === undefined ||
-      repository === context.repository ||
-      normalizeExpression(repository) === "${{github.repository}}";
+      (typeof repository === "string" && repository === context.repository) ||
+      (!context.reusableWorkflow &&
+        (repository === undefined ||
+          normalizeExpression(repository) === "${{github.repository}}"));
     const sameRef =
       ref === undefined ||
       ref === "" ||
       (context.headSha !== undefined && ref === context.headSha) ||
-      normalizeExpression(ref) === "${{github.sha}}";
+      (!context.reusableWorkflow &&
+        normalizeExpression(ref) === "${{github.sha}}");
     if (
       !sameRepository ||
       !sameRef ||
@@ -1518,6 +1522,7 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
     );
   const stepContext = {
     ...context,
+    reusableWorkflow: triggers.includes("workflow_call"),
     offlineBunAllowed:
       !environmentUncertain(job.env) &&
       !defaultsUncertain(job.defaults) &&
