@@ -84,7 +84,7 @@ export class GitHubClient {
             /rate.?limit/i.test(error.message));
         const transientNetwork =
           error.status === undefined &&
-          /timeout|timed out|connection re|unexpected EOF|temporary failure/i.test(
+          /timeout|timed out|connection re|(?:^|unexpected |:\s*)EOF\b|temporary failure/i.test(
             error.message,
           );
         const retryable =

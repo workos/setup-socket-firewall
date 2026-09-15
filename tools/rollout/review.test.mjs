@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { stringify } from "yaml";
 import { runAudit } from "./audit.mjs";
 import { APPROVED_RELEASE_SHA } from "./constants.mjs";
+import { GitHubClient, GhCommandError } from "./github.mjs";
 import { canonicalJson, fingerprint } from "./fingerprint.mjs";
 import {
   advanceReview,
@@ -93,6 +94,43 @@ function acknowledge(state, extra = {}) {
     ...extra,
   });
 }
+
+test("bare transport EOF is retried within the existing bound, not mistaken for changed repository state", async () => {
+  let calls = 0;
+  const delays = [];
+  const api = new GitHubClient({
+    execute: async () => {
+      calls++;
+      if (calls === 1)
+        throw new GhCommandError(
+          'Get "https://api.github.com/repos/owner/example": EOF',
+        );
+      return { stdout: "{}" };
+    },
+    sleep: async (delay) => {
+      delays.push(delay);
+    },
+  });
+  assert.deepEqual(await api.api("repos/owner/example"), {});
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [5000]);
+  calls = 0;
+  delays.length = 0;
+  api.execute = async () => {
+    calls++;
+    throw new GhCommandError("EOF");
+  };
+  await assert.rejects(api.api("repos/owner/example"), /failed/);
+  assert.equal(calls, 4);
+  assert.deepEqual(delays, [5000, 10000, 20000]);
+  calls = 0;
+  api.execute = async () => {
+    calls++;
+    throw new GhCommandError("denied", { status: 403 });
+  };
+  await assert.rejects(api.api("repos/owner/example"), /denied/);
+  assert.equal(calls, 1);
+});
 
 test("weekly findings and decisions are stable across order, timestamps, unrelated commits, YAML comments and other jobs", async () => {
   const first = advanceReview(newReviewState(), await scan());
