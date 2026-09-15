@@ -2,13 +2,18 @@ import { APPROVED_RELEASE_SHA } from "./constants.mjs";
 
 // Configuration/executable/startup controls, not application credentials.
 const RELEVANT_ENV =
-  /^(?:(?:npm|pnpm|bun|yarn|corepack)_|HOME$|GITHUB_ENV$|GITHUB_PATH$|SFW_BUN_CONFIG_PATH$|USERPROFILE$|XDG_|APPDATA$|LOCALAPPDATA$|PATH$|NODE_OPTIONS$|NODE_PATH$|BASH_ENV$|ENV$|SHELL$|SHELLOPTS$|BASHOPTS$|CDPATH$|LD_|DYLD_|BASH_FUNC_|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|NODE_EXTRA_CA_CERTS$|NODE_TLS_REJECT_UNAUTHORIZED$|SSL_CERT_|CURL_CA_BUNDLE$)/i;
+  /^(?:(?:npm|pnpm|bun|yarn|corepack)_|HOME$|RUNNER_TEMP$|GITHUB_ENV$|GITHUB_PATH$|SFW_BUN_CONFIG_PATH$|USERPROFILE$|XDG_|APPDATA$|LOCALAPPDATA$|PATH$|NODE_OPTIONS$|NODE_PATH$|BASH_ENV$|ENV$|SHELL$|SHELLOPTS$|BASHOPTS$|CDPATH$|LD_|DYLD_|BASH_FUNC_|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|NODE_EXTRA_CA_CERTS$|NODE_TLS_REJECT_UNAUTHORIZED$|SSL_CERT_|CURL_CA_BUNDLE$)/i;
 // Workflow toolchain-version metadata does not select a registry/config path.
 const VERSION_ENV = new Set([
   "NODE_VERSION",
   "PNPM_VERSION",
   "BUN_VERSION",
   "XCODE_VERSION",
+]);
+export const SUPPORTED_SHELLS = new Set([
+  "bash",
+  "sh",
+  "bash --noprofile --norc -euo pipefail {0}",
 ]);
 const normalize = (value) => String(value ?? "").replaceAll(/\s+/g, "");
 const expression = (value) =>
@@ -46,7 +51,7 @@ export function defaultsUncertain(defaults) {
     Object.entries(defaults.run).some(([key, value]) =>
       key === "working-directory"
         ? !literalWorkingDirectory(value)
-        : key !== "shell" || !["bash", "sh"].includes(value),
+        : key !== "shell" || !SUPPORTED_SHELLS.has(value),
     )
   );
 }
@@ -293,6 +298,15 @@ export function observedIntegration(operations, job, context) {
         step: operation.step,
         manager: operation.manager,
         ...result,
+        ...(operation.registryExclusion
+          ? {
+              exclusionId: operation.registryExclusion,
+              status:
+                result.status === "covered"
+                  ? "covered-with-exclusion"
+                  : result.status,
+            }
+          : {}),
       });
     }
     if (operation.registryPersisting) {
@@ -362,7 +376,9 @@ export function observedIntegration(operations, job, context) {
       ? "needs-review"
       : downloads.length ||
           additionalJsPaths.some((path) => path.status === "setup-observed")
-        ? "integrated"
+        ? downloads.some((entry) => entry.exclusionId)
+          ? "integrated-with-exclusions"
+          : "integrated"
         : "no-js-ci";
   return {
     disposition,
@@ -463,12 +479,12 @@ export function resolveNoInstallWorkflowCalls(repositories, organization) {
     return {
       ...repository,
       workflows,
-      disposition: integrationDisposition(workflows),
+      disposition: integrationDisposition(workflows, repository.exclusions),
     };
   });
 }
 
-export function integrationDisposition(workflows) {
+export function integrationDisposition(workflows, exclusions = []) {
   const dispositions = new Set(
     workflows.flatMap((workflow) => [
       ...(workflow.parseError !== undefined ? ["needs-review"] : []),
@@ -477,7 +493,19 @@ export function integrationDisposition(workflows) {
       ),
     ]),
   );
-  for (const disposition of ["needs-sfw", "needs-review", "integrated"]) {
+  if (exclusions.some((entry) => entry.status === "stale"))
+    dispositions.add("needs-review");
+  if (
+    dispositions.has("integrated") &&
+    exclusions.some((entry) => entry.status === "matched")
+  )
+    dispositions.add("integrated-with-exclusions");
+  for (const disposition of [
+    "needs-sfw",
+    "needs-review",
+    "integrated-with-exclusions",
+    "integrated",
+  ]) {
     if (dispositions.has(disposition)) return disposition;
   }
   return workflows.length ? "no-js-ci" : "no-ci";

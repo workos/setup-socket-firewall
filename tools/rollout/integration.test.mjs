@@ -245,7 +245,7 @@ test("teardown guards establish only the appropriate success-path boundary", () 
   }
 });
 
-test("audit v2 separates primary integration counts from assurance and errors", async () => {
+test("audit v3 separates primary integration counts from assurance and errors", async () => {
   const workflow = `on: push\njobs:\n  build:\n    steps:\n      - uses: ${setup.uses}\n        with: { token: '${setup.with.token}' }\n      - run: npm ci\n      - run: npm test\n`;
   const client = {
     listRestRepositories: async () =>
@@ -271,7 +271,7 @@ test("audit v2 separates primary integration counts from assurance and errors", 
     getText: async () => workflow,
   };
   const report = await runAudit(client);
-  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.schemaVersion, 3);
   assert.deepEqual(report.dispositions, { "audit-error": 1, integrated: 1 });
   assert.deepEqual(report.assuranceDispositions, {
     "audit-error": 1,

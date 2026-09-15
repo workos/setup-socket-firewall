@@ -16,6 +16,144 @@ const context = { visibility: "private", path: ".github/workflows/ci.yml" };
 const inspect = (steps, extra = {}) =>
   classifyJob("build", { steps, ...extra }, context, ["push"]);
 
+test("workspace matrix selectors require bounded literal values", () => {
+  const strategy = { matrix: { app: ["research", "incident-watch"] } };
+  for (const run of [
+    "npm -w apps/${{ matrix.app }} run build",
+    'npm --workspace="apps/${{ matrix.app }}" run typecheck',
+  ]) {
+    assert.equal(
+      inspect([setup, { run: "npm ci" }, { run }], { strategy }).integration
+        .disposition,
+      "integrated",
+    );
+    assert.equal(inspect([{ run }], { strategy }).status, "unknown");
+    for (const matrix of [
+      { app: ["research; npm install evil"] },
+      { app: ["../elsewhere"] },
+      { app: ["--registry=elsewhere"] },
+      { app: [] },
+      { app: ["research"], include: [{ app: "unsafe value" }] },
+      "${{ fromJSON(needs.matrix.outputs.apps) }}",
+    ])
+      assert.equal(
+        inspect([{ run }], { strategy: { matrix } }).integration.disposition,
+        "needs-review",
+      );
+  }
+  const run = "npm -w apps/${{ matrix.app }} install";
+  assert.equal(
+    inspect([{ run }], { strategy }).integration.disposition,
+    "needs-sfw",
+  );
+  assert.equal(
+    inspect([setup, { run }], { strategy }).integration.disposition,
+    "integrated",
+  );
+});
+
+test("runner-temp tarballs stay local, without excusing runner-temp overrides", () => {
+  for (const run of [
+    'npm install --no-save --ignore-scripts "$RUNNER_TEMP"/example-*.tgz',
+    'npx --yes --package "$RUNNER_TEMP"/example-*.tgz example --list',
+  ]) {
+    assert.equal(
+      inspect([setup, { run }]).integration.disposition,
+      "integrated",
+    );
+    assert.equal(inspect([{ run }]).integration.disposition, "needs-sfw");
+    assert.equal(
+      inspect([setup, { run }], {
+        env: { RUNNER_TEMP: "https://example.invalid" },
+      }).integration.disposition,
+      "needs-review",
+    );
+    assert.equal(
+      inspect([setup, { run: `RUNNER_TEMP=https://example.invalid\n${run}` }])
+        .integration.disposition,
+      "needs-review",
+    );
+  }
+  for (const target of [
+    "$ARTIFACTS/example.tgz",
+    "$RUNNER_TEMP/../example.tgz",
+    "$RUNNER_TEMP/$PACKAGE.tgz",
+  ])
+    assert.equal(
+      inspect([setup, { run: `npm install "${target}"` }]).integration
+        .disposition,
+      "needs-review",
+    );
+});
+
+test("clean-room npm preserves only the exact inherited registry and config", () => {
+  const prefix =
+    'env -i CI=true HOME="$HOME" PATH="$PATH" NPM_CONFIG_REGISTRY="${NPM_CONFIG_REGISTRY:?}" NPM_CONFIG_USERCONFIG="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"';
+  for (const command of ["npm ci", "npm ci --prefix web"]) {
+    const run = `${prefix} ${command}`;
+    assert.equal(
+      inspect([setup, { run }]).integration.disposition,
+      "integrated",
+    );
+    assert.equal(inspect([{ run }]).integration.disposition, "needs-sfw");
+    assert.equal(inspect([setup, { run }]).status, "unknown");
+  }
+  for (const run of [
+    `${prefix.replace('PATH="$PATH"', 'PATH="/other"')} npm ci`,
+    `${prefix.replace('HOME="$HOME"', 'HOME="/other"')} npm ci`,
+    `${prefix.replace('"${NPM_CONFIG_REGISTRY:?}"', '"https://example.invalid"')} npm ci`,
+    `${prefix.replace('"${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"', '"/other/.npmrc"')} npm ci`,
+    `${prefix} NODE_OPTIONS=--require=evil.cjs npm ci`,
+    `${prefix} HOME="$HOME" npm ci`,
+    "env -i npm ci",
+  ])
+    assert.notEqual(
+      inspect([setup, { run }]).integration.disposition,
+      "integrated",
+      run,
+    );
+});
+
+test("standard explicit Bash and local script commands are not unknown installer options", () => {
+  const shell = "bash --noprofile --norc -euo pipefail {0}";
+  assert.equal(
+    inspect([setup, { run: "npm ci", shell }]).integration.disposition,
+    "integrated",
+  );
+  assert.equal(
+    inspect([{ run: "npm ci", shell }]).integration.disposition,
+    "needs-sfw",
+  );
+  for (const custom of ["bash --rcfile /other {0}", "python {0}"]) {
+    assert.equal(
+      inspect([setup, { run: "npm ci", shell: custom }]).integration
+        .disposition,
+      "needs-review",
+    );
+  }
+  for (const run of [
+    'npm version "$VERSION" --no-git-tag-version',
+    "npm pack --json",
+    "packed=$(npm pack --json)",
+    "bun scripts/build-binary.ts --target $TARGET",
+  ]) {
+    const result = inspect([{ run }]);
+    assert.equal(result.integration.disposition, "no-js-ci", run);
+    assert.equal(result.status, "unknown", run);
+  }
+  for (const run of [
+    "npm pack @scope/remote",
+    "npm pack $PACKAGE",
+    "npm pack --pack-destination $DIR",
+    "bun $SCRIPT",
+  ])
+    assert.equal(
+      inspect([{ run }]).integration.disposition,
+      "needs-review",
+      run,
+    );
+});
+
 test("matching immutable output guards cover only the same guarded installs", () => {
   const ready = { id: "ready", run: 'echo enabled=true >> "$GITHUB_OUTPUT"' };
   for (const guard of [
@@ -150,7 +288,7 @@ test("literal npx package selectors retain all download and configuration bounda
   }
   for (const run of [
     "npx --package=$PACKAGE tool",
-    "npx --package $RUNNER_TEMP/tool.tgz tool",
+    "npx --package $ARTIFACTS/tool.tgz tool",
     "npx --package=https://example.invalid/tool.tgz tool",
     "npx --package tool",
     "bunx --package tool tool",

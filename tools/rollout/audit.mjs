@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { classifyWorkflow, repositoryDisposition } from "./classify.mjs";
 import { captureRepositoryInventory } from "./inventory.mjs";
 import { ORGANIZATION } from "./constants.mjs";
+import { readRegistryExclusions } from "./exclusions.mjs";
 import {
   integrationDisposition,
   resolveLocalWorkflowCalls,
@@ -212,11 +213,19 @@ export async function auditRepository(client, repository) {
       );
     }
 
+    const exclusions = await readRegistryExclusions(
+      repository.name,
+      readSource,
+    );
     const workflows = resolveLocalWorkflowCalls(
       workflowPaths.map((path, index) =>
         classifyWorkflow(workflowTexts[index], {
           localActions,
           path,
+          registryExclusion: exclusions.find(
+            (entry) =>
+              entry.status === "matched" && entry.workflows.includes(path),
+          ),
           visibility: repository.visibility,
         }),
       ),
@@ -238,8 +247,9 @@ export async function auditRepository(client, repository) {
 
     return {
       defaultBranch: repository.defaultBranch,
-      disposition: integrationDisposition(workflows),
+      disposition: integrationDisposition(workflows, exclusions),
       assuranceDisposition: repositoryDisposition(workflows),
+      exclusions,
       headSha,
       jobs: {
         byStatus: Object.fromEntries(
@@ -322,7 +332,7 @@ export async function runAudit(client, options = {}) {
     coverage:
       "token-visible repositories only; organization-wide access is an operator prerequisite",
     repositories: rows,
-    schemaVersion: 2,
+    schemaVersion: 3,
   };
 }
 

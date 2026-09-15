@@ -9,9 +9,11 @@ import {
   literalWorkingDirectory,
   observedIntegration,
   unresolvedJsInvocation,
+  SUPPORTED_SHELLS,
 } from "./integration.mjs";
 
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/;
+const LOCAL_TARBALL = /^\$(?:RUNNER_TEMP|\{RUNNER_TEMP\})\/[\w.*-]+\.tgz$/;
 const UNSAFE_PUBLIC_TRIGGERS = new Set([
   "issue_comment",
   "pull_request_target",
@@ -152,7 +154,7 @@ function expectedTokenExpression(visibility) {
   return `\${{secrets.${secret}}}`;
 }
 
-function commandParts(command) {
+function commandParts(command, context = {}) {
   const tokens = shellTokens(command);
   const words = tokens.words;
   const environment = {};
@@ -170,6 +172,41 @@ function commandParts(command) {
     }
   };
   assignments();
+  let preservedEnvironment = false;
+  if (words[start] === "env" && words[start + 1] === "-i") {
+    // This clean-room npm invocation retains the exact action-configured paths
+    // and registry. Every other env -i shape remains unresolved.
+    const expected = {
+      HOME: '"$HOME"',
+      PATH: '"$PATH"',
+      NPM_CONFIG_REGISTRY: '"${NPM_CONFIG_REGISTRY:?}"',
+      NPM_CONFIG_USERCONFIG: '"${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"',
+    };
+    const values = new Map();
+    let end = start + 2;
+    let duplicate = false;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[end] ?? "")) {
+      const raw = tokens.commands[end];
+      const key = raw.slice(0, raw.indexOf("="));
+      duplicate ||= values.has(key);
+      values.set(key, raw.slice(key.length + 1));
+      end += 1;
+    }
+    if (
+      !duplicate &&
+      words[end] === "npm" &&
+      Object.entries(expected).every(
+        ([key, value]) => values.get(key) === value,
+      ) &&
+      [...values].every(
+        ([key, value]) =>
+          Object.hasOwn(expected, key) || (key === "CI" && value === "true"),
+      )
+    ) {
+      start = end;
+      preservedEnvironment = true;
+    }
+  }
   if (words[start] === "env" && !words[start + 1]?.startsWith("-")) {
     start += 1;
     assignments(true);
@@ -185,16 +222,21 @@ function commandParts(command) {
       : args[1]?.startsWith("--workspace=")
         ? args[1].slice(12)
         : undefined;
-    if (!literalWorkingDirectory(value) || value.startsWith("-")) break;
+    const bounded = value?.replace(
+      /\$\{\{\s*matrix\.([\w-]+)\s*\}\}/g,
+      (match, key) =>
+        context.literalMatrixKeys?.has(key) ? "matrix-value" : match,
+    );
+    if (!literalWorkingDirectory(bounded) || bounded.startsWith("-")) break;
     const count = separate ? 2 : 1;
     args.splice(1, count);
     rawArgs.splice(1, count);
   }
-  return { words: args, rawWords: rawArgs, environment };
+  return { words: args, rawWords: rawArgs, environment, preservedEnvironment };
 }
 
-function commandWords(command) {
-  return commandParts(command).words;
+function commandWords(command, context) {
+  return commandParts(command, context).words;
 }
 
 // Literal logging only: quoted source, substitution and shell controls are not
@@ -324,7 +366,7 @@ function directExecutor(words) {
     // npm parses options after the command too, unless an explicit -- ends them.
     return ["exec", "x"].includes(words[1]) &&
       words[2] === "--" &&
-      packageName.test(words[3] ?? "")
+      (packageName.test(words[3] ?? "") || LOCAL_TARBALL.test(words[3] ?? ""))
       ? words.slice(0, 3).join(" ")
       : undefined;
   }
@@ -335,20 +377,25 @@ function directExecutor(words) {
     else if (
       words[0] === "npx" &&
       ["-p", "--package"].includes(words[target]) &&
-      packageName.test(words[target + 1] ?? "")
+      (packageName.test(words[target + 1] ?? "") ||
+        LOCAL_TARBALL.test(words[target + 1] ?? ""))
     )
       target += 2;
     else if (
       words[0] === "npx" &&
       words[target].startsWith("--package=") &&
-      packageName.test(words[target].slice(10))
+      (packageName.test(words[target].slice(10)) ||
+        LOCAL_TARBALL.test(words[target].slice(10)))
     )
       target += 1;
     else break;
   }
   // Installer options end at the literal package/binary target. Arguments to
   // that program are payload, not npx/bunx registry configuration.
-  if (!/^[A-Za-z0-9_@][A-Za-z0-9_@./:+-]*$/.test(words[target] ?? ""))
+  if (
+    !/^[A-Za-z0-9_@][A-Za-z0-9_@./:+-]*$/.test(words[target] ?? "") &&
+    !LOCAL_TARBALL.test(words[target] ?? "")
+  )
     return undefined;
   return words.slice(0, target).join(" ");
 }
@@ -366,8 +413,8 @@ function firstSubcommand(words) {
   return words.slice(1).find((word) => !word.startsWith("-"));
 }
 
-export function classifyCommand(command) {
-  const words = commandWords(command);
+export function classifyCommand(command, context) {
+  const words = commandWords(command, context);
   const program = words[0];
   if (!program) {
     return { command, kind: "no-network" };
@@ -753,6 +800,19 @@ export function classifyStep(step, context = {}) {
     integrationEnv = { ...step.env };
     delete integrationEnv.NPM_CONFIG_USERCONFIG;
   }
+  const registryExclusion =
+    context.registryExclusion &&
+    !context.actionStack?.length &&
+    [undefined, ".", "./"].includes(step["working-directory"]) &&
+    isMapping(integrationEnv) &&
+    integrationEnv.NPM_CONFIG_REPLACE_REGISTRY_HOST === "npmjs" &&
+    /^\s*npm\s+(?:ci|install)\s*$/.test(step.run ?? "")
+      ? context.registryExclusion.id
+      : undefined;
+  if (registryExclusion) {
+    integrationEnv = { ...integrationEnv };
+    delete integrationEnv.NPM_CONFIG_REPLACE_REGISTRY_HOST;
+  }
   let integrationUncertain =
     boundaryUncertain({ ...step, env: undefined, if: primaryRunGuard(step) }) ||
     environmentUncertain(integrationEnv);
@@ -771,20 +831,21 @@ export function classifyStep(step, context = {}) {
       /[;'"$`|<>(){}\\]|(?:^|\s)(?:if|then|else|fi|for|while|case|eval|source|sudo)(?:\s|$)|(?<!&)&(?!&)/m.test(
         script,
       ) ||
-      (step.shell !== undefined && !["bash", "sh"].includes(step.shell));
+      (step.shell !== undefined && !SUPPORTED_SHELLS.has(step.shell));
     uncertain ||= complexShell(step.run);
     const shell = shellCommands(step.run);
     integrationUncertain ||=
       shell.ambiguous ||
-      (step.shell !== undefined && !["bash", "sh"].includes(step.shell));
+      (step.shell !== undefined && !SUPPORTED_SHELLS.has(step.shell));
     const conditionalControl =
       shell.conditional ||
       shell.commands.some((command) =>
         /^(?:if|case|for|while|until|select)\b/.test(command),
       );
     operations = shell.commands.map((command) => {
-      const operation = classifyCommand(command);
-      const { words, rawWords, environment } = commandParts(command);
+      const operation = classifyCommand(command, context);
+      const { words, rawWords, environment, preservedEnvironment } =
+        commandParts(command, context);
       const bunArguments = approvedBunArguments(words, rawWords);
       const tokens = shellTokens(command);
       const nestedCommands = tokens.substitutions.flatMap(
@@ -905,7 +966,13 @@ export function classifyStep(step, context = {}) {
         (unsupportedFlags && !registryMutating) ||
         (operation.kind === "js-public-download" &&
           /[$`]/.test(
-            words.filter((_, index) => !bunArguments.has(index)).join(" "),
+            words
+              .filter(
+                (word, index) =>
+                  !bunArguments.has(index) &&
+                  !(words[0] === "npm" && LOCAL_TARBALL.test(word)),
+              )
+              .join(" "),
           )) ||
         (configFileWrite && !knownRegistryContent) ||
         nestedOverride ||
@@ -995,7 +1062,7 @@ export function classifyStep(step, context = {}) {
         operation.integrationUncertain ||
         (operation.explicitJsInvocation && nestedEnvironment) ||
         (directInvocation && !operation.manager) ||
-        (step.shell !== undefined && !["bash", "sh"].includes(step.shell)) ||
+        (step.shell !== undefined && !SUPPORTED_SHELLS.has(step.shell)) ||
         (operation.kind === "unknown-wrapper" &&
           operation.manager !== undefined &&
           (words[1]?.startsWith("-") || /[$`]/.test(words[1] ?? ""))) ||
@@ -1003,7 +1070,8 @@ export function classifyStep(step, context = {}) {
         /^(?:\.?\.?\/|\/)[^\s]*\/(?:npm|pnpm|npx|bun|bunx|yarn|corepack)\b/.test(
           command,
         ) ||
-        (/^(?:env|sudo|command|time|exec)$/.test(words[0] ?? "") &&
+        (!preservedEnvironment &&
+          /^(?:env|sudo|command|time|exec)$/.test(words[0] ?? "") &&
           /(?:^|\s)(?:npm|pnpm|npx|bun|bunx|yarn|corepack)\b/.test(command)) ||
         (operation.registryMutating && shell.ambiguous);
       operation.integrationSyntaxUncertain = shell.ambiguous;
@@ -1024,6 +1092,7 @@ export function classifyStep(step, context = {}) {
   }
   return operations.map((operation) => ({
     ...operation,
+    ...(registryExclusion ? { registryExclusion } : {}),
     ...(uncertain || operation.uncertain ? { uncertain: true } : {}),
     integrationUncertain:
       integrationUncertain ||
@@ -1042,7 +1111,18 @@ function scriptInvocation(words, kind) {
     kind === "unknown-wrapper" &&
     ["npm", "pnpm", "bun", "yarn"].includes(words[0]) &&
     (/^(?:run|test|start|stop|restart)$/.test(words[1] ?? "") ||
-      (words[0] === "bun" && words[1] === "build") ||
+      (words[0] === "bun" &&
+        (words[1] === "build" ||
+          (literalWorkingDirectory(words[1]) &&
+            /\.[cm]?[jt]sx?$/.test(words[1])))) ||
+      (words[0] === "npm" &&
+        (words[1] === "version" ||
+          (words[1] === "pack" &&
+            words
+              .slice(2)
+              .every((arg) =>
+                ["--json", "--ignore-scripts", "--dry-run"].includes(arg),
+              )))) ||
       (["pnpm", "yarn"].includes(words[0]) &&
         /^[A-Za-z0-9_:.+-]+$/.test(words[1] ?? "") &&
         !/^(?:config|env|setup|set|create|self-update|plugin|policies|patch|patch-commit)$/.test(
@@ -1278,12 +1358,62 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
   }
 
   const steps = Array.isArray(job.steps) ? job.steps : [];
-  const stepContext = { ...context, stepBudget: { remaining: 1000 } };
+  const matrix = job.strategy?.matrix;
+  const literalMatrixKeys = new Set(
+    matrix &&
+      typeof matrix === "object" &&
+      !Array.isArray(matrix) &&
+      matrix.include === undefined
+      ? Object.entries(matrix)
+          .filter(
+            ([, values]) =>
+              Array.isArray(values) &&
+              values.length > 0 &&
+              values.every(
+                (value) =>
+                  typeof value === "string" &&
+                  /^[A-Za-z0-9_][\w.-]*$/.test(value),
+              ),
+          )
+          .map(([key]) => key)
+      : [],
+  );
+  const checkouts = steps
+    .map((step, index) => ({ step, index }))
+    .filter(
+      ({ step }) =>
+        typeof step?.uses === "string" &&
+        step.uses.startsWith("actions/checkout@"),
+    );
+  const checkout = checkouts[0];
+  const defaultCheckout =
+    checkouts.length === 1 &&
+    condition(checkout.step.if) === "always" &&
+    condition(checkout.step["continue-on-error"] ?? false) === "never" &&
+    ["ref", "repository", "path", "sparse-checkout"].every(
+      (key) => checkout.step.with?.[key] === undefined,
+    );
+  const stepContext = {
+    ...context,
+    registryExclusion:
+      defaultCheckout &&
+      context.exclusionRootDirectory !== false &&
+      [undefined, ".", "./"].includes(job.defaults?.run?.["working-directory"])
+        ? context.registryExclusion
+        : undefined,
+    literalMatrixKeys,
+    stepBudget: { remaining: 1000 },
+  };
   const operations =
     condition(job.if) === "never"
       ? []
       : steps.flatMap((step, index) =>
-          classifyStep(step, stepContext).map((operation) => ({
+          classifyStep(
+            step,
+            index > (checkout?.index ?? -1)
+              ? stepContext
+              : { ...stepContext, registryExclusion: undefined },
+          ).map((operation) => ({
             ...operation,
             step: index + 1,
           })),
@@ -1296,7 +1426,7 @@ export function classifyJob(jobName, job, context = {}, triggers = []) {
     boundaryUncertain(job) ||
     context.workflowUncertain ||
     (job.defaults?.run?.shell !== undefined &&
-      !["bash", "sh"].includes(job.defaults.run.shell))
+      !SUPPORTED_SHELLS.has(job.defaults.run.shell))
   ) {
     operations.push({
       kind: "unknown",
@@ -1429,6 +1559,9 @@ export function classifyWorkflow(text, context) {
       job,
       {
         ...context,
+        exclusionRootDirectory: [undefined, ".", "./"].includes(
+          workflow.defaults?.run?.["working-directory"],
+        ),
         workflowUncertain:
           workflow.env !== undefined || workflow.defaults !== undefined,
         integrationContextUncertain:
