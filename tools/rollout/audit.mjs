@@ -187,18 +187,6 @@ export async function auditRepository(client, repository) {
     // bounds cycles in fetching; the classifier separately bounds expansion.
     const localActions = new Map();
     const sourceContext = {
-      // Configuration changes matter; unrelated commits and dependency-lock
-      // churn do not invalidate a reviewed workflow job.
-      reviewConfiguration: fingerprint(
-        tree.tree
-          .filter((entry) =>
-            /(?:^|\/)(?:\.npmrc|\.?bunfig\.toml|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|pnpm-config\.json)$/.test(
-              entry.path,
-            ),
-          )
-          .map(({ path, mode, type, sha }) => ({ path, mode, type, sha }))
-          .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
-      ),
       repository: fullName,
       defaultBranch: repository.defaultBranch,
       headSha,
@@ -304,6 +292,25 @@ export async function auditRepository(client, repository) {
         ),
       }),
     }));
+    // Configuration changes matter, but validated registry-only override
+    // version bumps in the approved Rush source do not change SFW routing.
+    sourceContext.reviewConfiguration = fingerprint(
+      tree.tree
+        .filter((entry) =>
+          /(?:^|\/)(?:\.npmrc|\.?bunfig\.toml|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|pnpm-config\.json)$/.test(
+            entry.path,
+          ),
+        )
+        .map(({ path, mode, type, sha }) => ({
+          path,
+          mode,
+          type,
+          sha:
+            exclusions.find((entry) => entry.manifest === path)
+              ?.configurationFingerprint ?? sha,
+        }))
+        .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+    );
     const workflows = resolveLocalWorkflowCalls(
       workflowPaths.map((path, index) => ({
         ...classifyWorkflow(workflowTexts[index], {

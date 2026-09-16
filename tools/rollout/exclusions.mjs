@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { parseYamlSource } from "./yaml.mjs";
+import { fingerprint } from "./fingerprint.mjs";
 
 // Approved source exclusions, not repository exemptions. A changed archive,
 // integrity pin, or additional non-npm source must be reviewed again.
@@ -113,7 +114,30 @@ async function readWorkosSource(rule, readSource) {
               /^file:(?!\/)[\w./@-]+\.tgz$/.test(resolution.tarball))))
       );
     });
-  return [{ ...rule, status: matched ? "matched" : "stale" }];
+  return [
+    {
+      ...rule,
+      status: matched ? "matched" : "stale",
+      ...(matched
+        ? {
+            // Only validated registry-version values are irrelevant to SFW routing.
+            // Retain override names/alias targets, the exact Git pin and every other
+            // Rush setting, including lifecycle-script policy and package extensions.
+            configurationFingerprint: fingerprint({
+              ...manifest,
+              globalOverrides: Object.fromEntries(
+                Object.entries(manifest.globalOverrides).map(([name, spec]) => [
+                  name,
+                  name === "tree-sitter-kotlin"
+                    ? spec
+                    : `${spec.startsWith("npm:") ? spec.slice(0, spec.lastIndexOf("@") + 1) : ""}<registry-version>`,
+                ]),
+              ),
+            }),
+          }
+        : {}),
+    },
+  ];
 }
 
 export async function readRegistryExclusions(repository, readSource) {

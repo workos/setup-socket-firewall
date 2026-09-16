@@ -447,6 +447,68 @@ test("upstream helper/reusable changes and stale archive inputs reopen their rec
   assert.equal(drift.decisions[archive.id].active, false);
 });
 
+test("accepted WorkOS cases ignore registry override versions, not installation policy changes", async () => {
+  const rule = REGISTRY_EXCLUSIONS.find((item) => item.repository === "workos");
+  const manifest = {
+    globalOverrides: {
+      "tree-sitter-kotlin": rule.specifier,
+      "body-parser@1": "1.20.6",
+      alias: "npm:one@^1.0.0",
+    },
+  };
+  const lock = {
+    lockfileVersion: "9.0",
+    overrides: manifest.globalOverrides,
+    packages: {
+      [rule.packagePath]: {
+        version: rule.version,
+        resolution: {
+          gitHosted: true,
+          integrity: rule.integrity,
+          tarball: rule.resolved,
+        },
+      },
+    },
+  };
+  const run = () =>
+    scan({
+      name: "workos",
+      files: {
+        ".github/workflows/ci.yml": workflow({
+          install: { steps: [job.steps[0], { uses: "./missing" }] },
+        }),
+        [rule.manifest]: JSON.stringify(manifest),
+        [rule.lockfile]: stringify(lock),
+      },
+    });
+  const accepted = acknowledge(advanceReview(newReviewState(), await run()), {
+    kind: "exception",
+  });
+  manifest.globalOverrides["body-parser@1"] = "1.20.8";
+  manifest.globalOverrides.alias = "npm:one@^2.0.0";
+  const repeated = advanceReview(accepted, await run());
+  assert.equal(canonicalJson(repeated), canonicalJson(accepted));
+  manifest.globalOverrides.alias = "npm:two@^2.0.0";
+  assert.equal(
+    reviewView(advanceReview(repeated, await run())).needsReview.length,
+    1,
+  );
+  manifest.globalOverrides.alias = "npm:one@^2.0.0";
+  manifest.globalOnlyBuiltDependencies = ["new-install-script"];
+  assert.equal(
+    reviewView(advanceReview(repeated, await run())).needsReview.length,
+    1,
+  );
+  delete manifest.globalOnlyBuiltDependencies;
+  manifest.globalOverrides["tree-sitter-kotlin"] =
+    "github:other/repo#unapproved";
+  assert.ok(
+    reviewView(advanceReview(repeated, await run())).needsReview.some(
+      (item) => item.kind === "exclusion",
+    ),
+  );
+});
+
 test("accepted OpenAPI cases survive registry bumps but not new source exceptions or routing changes", async () => {
   const rule = REGISTRY_EXCLUSIONS.find(
     (item) => item.repository === "openapi-spec",
