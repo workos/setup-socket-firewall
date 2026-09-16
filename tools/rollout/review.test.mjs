@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { stringify } from "yaml";
 import { runAudit } from "./audit.mjs";
 import { APPROVED_RELEASE_SHA } from "./constants.mjs";
+import { REGISTRY_EXCLUSIONS } from "./exclusions.mjs";
 import { GitHubClient, GhCommandError } from "./github.mjs";
 import { canonicalJson, fingerprint } from "./fingerprint.mjs";
 import {
@@ -444,6 +445,71 @@ test("upstream helper/reusable changes and stale archive inputs reopen their rec
     }),
   );
   assert.equal(drift.decisions[archive.id].active, false);
+});
+
+test("accepted OpenAPI cases survive registry bumps but not new source exceptions or routing changes", async () => {
+  const rule = REGISTRY_EXCLUSIONS.find(
+    (item) => item.repository === "openapi-spec",
+  );
+  const files = {
+    ".github/workflows/ci.yml": workflow({
+      install: {
+        steps: [job.steps[0], setup, { run: "npm ci" }, { uses: "./missing" }],
+      },
+    }),
+    ".npmrc": rule.projectNpmrc.join("\n"),
+  };
+  const dependencies = {
+    ordinary: "1.0.0",
+    "tree-sitter-kotlin": rule.resolved,
+  };
+  const manifest = { dependencies, overrides: { "js-yaml": "^5.4.2" } };
+  const lock = {
+    lockfileVersion: 3,
+    packages: {
+      "": { dependencies },
+      "node_modules/ordinary": {
+        version: "1.0.0",
+        resolved: "https://registry.npmjs.org/ordinary/-/ordinary-1.0.0.tgz",
+      },
+      [rule.packagePath]: {
+        version: rule.version,
+        resolved: rule.resolved,
+        integrity: rule.integrity,
+      },
+    },
+  };
+  const run = (config = files[".npmrc"]) =>
+    scan({
+      name: "openapi-spec",
+      files: {
+        ...files,
+        ".npmrc": config,
+        "package.json": JSON.stringify(manifest),
+        "package-lock.json": JSON.stringify(lock),
+      },
+    });
+  const accepted = acknowledge(advanceReview(newReviewState(), await run()), {
+    kind: "exception",
+  });
+  dependencies.ordinary = "2.0.0";
+  manifest.overrides["js-yaml"] = "^5.4.3";
+  lock.packages["node_modules/ordinary"] = {
+    version: "2.0.0",
+    resolved: "https://registry.npmjs.org/ordinary/-/ordinary-2.0.0.tgz",
+  };
+  const repeated = advanceReview(accepted, await run());
+  assert.equal(canonicalJson(repeated), canonicalJson(accepted));
+  assert.equal(reviewView(repeated).known[0].decision.kind, "exception");
+  lock.packages[rule.packagePath].integrity = "sha512-unapproved";
+  const changedSource = reviewView(advanceReview(repeated, await run()));
+  assert.equal(changedSource.needsReview.length, 1);
+  assert.equal(changedSource.needsReview[0].kind, "exclusion");
+  assert.ok(
+    reviewView(
+      advanceReview(repeated, await run("registry=https://other.invalid/")),
+    ).needsReview.some((item) => item.kind === "job"),
+  );
 });
 
 test("CLI persistence survives restart; missing/corrupt state, races and partial scans fail without replacing decisions", async () => {

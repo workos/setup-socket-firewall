@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const execFile = promisify(execFileCallback);
@@ -138,10 +139,32 @@ export class GitHubClient {
   }
 
   async getText(repository, path, ref) {
-    const response = await this.api(
+    let response = await this.api(
       `repos/${repository}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`,
       `read ${repository}/${path} at ${ref}`,
     );
+    let blobSha;
+    // Contents omits bytes above 1 MiB (the Rush lockfile is ~2 MiB).
+    // Resolve only the returned immutable blob; never fall back to another ref.
+    if (
+      response?.type === "file" &&
+      response.encoding === "none" &&
+      response.content === "" &&
+      Number.isSafeInteger(response.size) &&
+      response.size > 1024 * 1024 &&
+      response.size <= 10 * 1024 * 1024 &&
+      typeof response.sha === "string" &&
+      /^[0-9a-f]{40}$/.test(response.sha)
+    ) {
+      blobSha = response.sha;
+      const blob = await this.api(
+        `repos/${repository}/git/blobs/${blobSha}`,
+        `read ${repository}/${path} blob ${blobSha}`,
+      );
+      if (blob?.sha !== blobSha || blob.size !== response.size)
+        throw new Error("Large source blob does not match file metadata");
+      response = { ...blob, type: "file" };
+    }
     const content =
       typeof response?.content === "string"
         ? response.content.replaceAll("\n", "")
@@ -152,9 +175,8 @@ export class GitHubClient {
       content === undefined ||
       !Number.isSafeInteger(response.size) ||
       response.size < 0 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-        content,
-      )
+      content.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(content)
     ) {
       throw new Error(
         `${repository}/${path} at ${ref} is not a complete base64 GitHub file response`,
@@ -169,6 +191,14 @@ export class GitHubClient {
         `${repository}/${path} at ${ref} has incomplete or malformed content`,
       );
     }
+    if (
+      blobSha &&
+      createHash("sha1")
+        .update(`blob ${bytes.length}\0`)
+        .update(bytes)
+        .digest("hex") !== blobSha
+    )
+      throw new Error("Large source content does not match its Git blob SHA");
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   }
 

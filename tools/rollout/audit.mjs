@@ -298,10 +298,9 @@ export async function auditRepository(client, repository) {
       reviewFingerprint: fingerprint({
         rule: entry,
         inputs: Object.fromEntries(
-          ["package.json", entry.lockfile, ".npmrc"].map((path) => [
-            path,
-            sourceDigests.get(path),
-          ]),
+          [entry.manifest ?? "package.json", entry.lockfile, ".npmrc"].map(
+            (path) => [path, sourceDigests.get(path)],
+          ),
         ),
       }),
     }));

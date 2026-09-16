@@ -28,11 +28,12 @@ async function scan({
   failRead = false,
   manifest = { dependencies },
   npmrc,
+  lockDependencies = dependencies,
 } = {}) {
   const lock = {
     lockfileVersion: 3,
     packages: {
-      "": { dependencies },
+      "": { dependencies: lockDependencies },
       "node_modules/ordinary": {
         version: "1.0.0",
         resolved: "https://registry.npmjs.org/ordinary/-/ordinary-1.0.0.tgz",
@@ -156,9 +157,10 @@ test("OpenAPI records the approved archive without waiving other findings", asyn
   for (const changes of [
     { npmrc: npmrc.replace("=npmjs", "=never") },
     { npmrc: `${npmrc}@other:registry=https://example.invalid/\n` },
-    {
-      manifest: { dependencies, overrides: { ...overrides, lodash: "^5.0.0" } },
-    },
+    { manifest: { dependencies, overrides: { extra: "other/archive" } } },
+    { manifest: { dependencies, overrides: { extra: "file:archive.tgz" } } },
+    { manifest: { dependencies, overrides: { extra: "1.tgz" } } },
+    { manifest: { dependencies, overrides: { extra: { nested: "1.0.0" } } } },
     {
       manifest: {
         dependencies,
@@ -183,7 +185,32 @@ test("OpenAPI records the approved archive without waiving other findings", asyn
     (await scan({ ...options, npmrc: undefined })).disposition,
     "audit-error",
   );
-  // The OpenAPI override snapshot never authorizes overrides in the other repos.
+  for (const nextOverrides of [
+    undefined,
+    { ...overrides, "js-yaml": "^5.4.2" },
+    { ...overrides, lodash: "^5.0.0", another: "npm:@scope/alias@^2.0.0" },
+  ]) {
+    const nextDependencies = { ...dependencies, ordinary: "^2.0.0" };
+    const updated = await scan({
+      ...options,
+      manifest: { dependencies: nextDependencies, overrides: nextOverrides },
+      lockDependencies: nextDependencies,
+      extraPackages: {
+        "node_modules/ordinary": {
+          version: "2.0.0",
+          resolved: "https://registry.npmjs.org/ordinary/-/ordinary-2.0.0.tgz",
+        },
+      },
+    });
+    assert.equal(updated.exclusions[0].status, "matched");
+    assert.equal(updated.disposition, "integrated-with-exclusions");
+    assert.equal(
+      updated.workflows[0].jobs[0].reviewFingerprint,
+      result.workflows[0].jobs[0].reviewFingerprint,
+      "registry-only dependency bumps do not invalidate reviewed jobs",
+    );
+  }
+  // OpenAPI's registry-only override policy does not authorize other repos.
   assert.equal(
     (await scan({ manifest: { dependencies, overrides } })).exclusions[0]
       .status,
