@@ -20,9 +20,9 @@
     "verify-action": "node tools/rollout/cli.mjs verify-action"
   },
   "dependencies": {
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   },
   "devDependencies": {
-    "prettier": "3.9.6"
+    "prettier": "3.9.10"
   }
 }
